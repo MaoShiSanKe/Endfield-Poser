@@ -159,6 +159,8 @@ struct Shot {
   bool mattePhase=false;std::vector<unsigned char> scene;
   std::vector<TransformState> transforms;Matrix view,projection;
   double deadline=0;
+  bool layerReserved=false;
+  ~Shot(){if(layerReserved&&mmd_visibility::captureLayer==layer)mmd_visibility::captureLayer=-1;}
 };
 static std::unique_ptr<Shot> shot;
 inline void *Target(uint32_t handle) {return handle?il2cpp_gchandle_get_target(handle):nullptr;}
@@ -190,13 +192,13 @@ inline bool Restore() {
     auto life=s.camera.inspect(obj);
     if(life==Life::Unavailable)ok=false;
     if(life==Life::Alive) {
-      if(!SetInt(api.maskSet,obj,s.mask))ok=false;
+      if(!SetInt(api.maskSet,obj,mmd_visibility::CameraMask(obj,s.mask)))ok=false;
     }
     life=s.hg.inspect(obj);if(life==Life::Unavailable)ok=false;
     if(life==Life::Alive)for(auto &f:s.fields)ok=f.Write(obj,true)&&ok;
     for(auto &l:s.layers) {
       life=l.object.inspect(obj);if(life==Life::Unavailable)ok=false;
-      if(life==Life::Alive)ok=SetInt(api.setLayer,obj,l.original)&&ok;
+      if(life==Life::Alive)ok=SetInt(api.setLayer,obj,mmd_visibility::ObjectLayer(obj,l.original))&&ok;
     }
   }
   if(s.registered) {
@@ -230,6 +232,7 @@ inline void Prepare(void *camera,void *actor,void *root,double now,bool isolate=
   Require(mmd_api::Value(api.width,camera,s.width)&&mmd_api::Value(api.height,camera,s.height)&&
     s.width>0&&s.height>0&&s.width<=8192&&s.height<=8192&&uint64_t(s.width)*s.height<=33554432,"Unsupported screenshot resolution");
   Require(mmd_api::Value(api.maskGet,camera,s.mask),"Cannot save camera mask");
+  s.mask=mmd_visibility::CameraMask(camera,s.mask,true);
   int eye=0;void *hgCamera=nullptr,*hgArgs[]{camera,&eye};
   Require(mmd_api::Call(api.hgCameraGet,nullptr,hgArgs,hgCamera)&&hgCamera,"Active HG camera unavailable");
   s.hgCamera=il2cpp_gchandle_new(hgCamera,false);Require(s.hgCamera,"Cannot retain HG camera");
@@ -245,12 +248,13 @@ inline void Prepare(void *camera,void *actor,void *root,double now,bool isolate=
   // Find a genuinely unused scene layer instead of assuming layer 30/31 is free.
   bool inactive=true;
   if(isolate) {
-  void *all=nullptr,*query[]{api.goType,&inactive};uint32_t used=0;
+  void *all=nullptr,*query[]{api.goType,&inactive};uint32_t used=mmd_visibility::ReservedLayers();
   Require(mmd_api::Call(api.all,nullptr,query,all),"Cannot inspect scene layers");
   for(void *go:Array(all,262144))if(UnityObjAlive(go)) {
     int layer=0;Require(mmd_api::Value(api.getLayer,go,layer)&&layer>=0&&layer<32,"Cannot inspect object layer");used|=uint32_t(1)<<layer;
   }
   s.layer=transparent_capture::UnusedLayer(used);Require(s.layer>=0,"No unused rendering layer is available");
+  mmd_visibility::captureLayer=s.layer;s.layerReserved=true;
   void *go=nullptr,*renderers=nullptr,*children[]{mmd_visibility::api.rendererType,&inactive};
   Require(mmd_api::Call(g_component_get_gameObject,root,nullptr,go)&&mmd_api::Call(mmd_visibility::api.query,go,children,renderers),"Cannot enumerate character renderers");
   std::set<void*> seen;
@@ -258,7 +262,8 @@ inline void Prepare(void *camera,void *actor,void *root,double now,bool isolate=
     Require(mmd_visibility::Scope(renderer,root)==1,"Character renderer changed");
     void *object=nullptr;Require(mmd_api::Call(g_component_get_gameObject,renderer,nullptr,object)&&UnityObjAlive(object),"Invalid character renderer object");
     if(!seen.insert(object).second)continue;
-    Layer l;Require(l.object.capture(object)&&mmd_api::Value(api.getLayer,object,l.original),"Cannot save character layer");s.layers.push_back(std::move(l));
+    Layer l;Require(l.object.capture(object)&&mmd_api::Value(api.getLayer,object,l.original),"Cannot save character layer");
+    l.original=mmd_visibility::ObjectLayer(object,l.original,true);s.layers.push_back(std::move(l));
   }
   Require(!s.layers.empty(),"No character renderers found");
   }
@@ -298,7 +303,7 @@ inline void Apply() {
   RegisterExtraction();
   if(!s.mattePhase)return; // The colour pass must keep the entire scene and original quality settings.
   s.changed=true;
-  for(auto &l:s.layers)Require(SetInt(api.setLayer,l.object.target(),s.layer),"Cannot isolate character renderer");
+  for(auto &l:s.layers)Require(SetInt(api.setLayer,l.object.target(),mmd_visibility::ObjectLayer(l.object.target(),s.layer)),"Cannot isolate character renderer");
   for(auto &f:s.fields)Require(f.Write(hg,false),"Cannot enable HG alpha rendering");
   Require(SetInt(api.maskSet,camera,int(uint32_t(1)<<s.layer)),"Cannot isolate game camera");
   if(!s.resetForCapture) {

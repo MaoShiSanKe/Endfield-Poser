@@ -206,7 +206,7 @@ static bool DrawMmdCameraSettings(double seconds, float targetHeight) {
   auto &m = g_mmd;
   auto &s = m.cameraSettings;
   const auto &keys = MmdCameraKeys();
-  bool changed = false;
+  bool changed = ImGui::Checkbox(u8"镜像镜头（左右翻转）", &s.mirror);
   int origin = int(s.origin);
   if (ImGui::Combo(u8"镜头原点", &origin, u8"固定播放起点\0跟随角色位移\0")) {
     s.origin = mmd::CameraOrigin(origin);
@@ -362,6 +362,7 @@ static void DrawMmdCamera() {
   if(m.editedCamera) {
     DrawMmdFile(m.editedCameraFile);
     ImGui::Checkbox(u8"随动作播放镜头",&s.enabled);
+    ImGui::Checkbox(u8"镜像镜头（左右翻转）",&s.mirror);
     ImGui::SliderFloat3(u8"镜头偏移",&s.offset.x,-5,5);
     ImGui::SliderFloat(u8"镜头远近",&s.distanceScale,.05f,10);
     if(ImGui::SliderFloat(u8"镜头时间偏移",&s.timeOffset,-120,120))MmdUpdateDuration();
@@ -566,6 +567,7 @@ static void DrawMmdPanel() {
     ImGui::Checkbox(u8"循环播放", &m.timeline.loop);
     ImGui::SameLine();
     ImGui::Checkbox(u8"原地播放", &m.inPlace);
+    ImGui::SameLine();ImGui::Checkbox(u8"镜像动作", &m.mirrorMotion);
     ImGui::EndDisabled();
     if (MmdOwnsPose()) {
       ImGui::TextDisabled(u8"动作控制中；暂停后可在姿态库保存当前身体姿态");
@@ -643,6 +645,8 @@ static void DrawMmdPanel() {
           if (m.audio.clip()) {
             DrawMmdFile(m.musicFile);
             ImGui::Text(u8"音乐长度：%.2f 秒", m.audio.clip()->duration());
+            ImGui::Checkbox(u8"播放音乐时静音游戏背景音乐",&m.muteGameMusic);
+            if(!mmd_music_mute::status.empty())ImGui::TextWrapped("%s",mmd_music_mute::status.c_str());
             if (ImGui::Checkbox(u8"随动作播放音乐", &m.musicEnabled)) {
               m.musicError.clear();
               MmdSyncAudio();

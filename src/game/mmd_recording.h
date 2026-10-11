@@ -289,12 +289,12 @@ inline void NewDirectory() {
     {"png_compression",j.opt.fastPng?"rgba_deflate1_up_or_rgb_stored":"standard"},{"writer_queue_layers",4},
     {"encoder_threads",2},{"writer_memory_budget_bytes",512ull*1024*1024},
     {"gpu_readback_slots",j.scenePipeline?2:1},
-    {"music_file",g_mmd.musicFile},{"music_offset_seconds",g_mmd.musicOffset},{"music_enabled",g_mmd.musicEnabled},
+    {"music_file",g_mmd.musicFile},{"music_offset_seconds",g_mmd.musicOffset},{"music_enabled",g_mmd.musicEnabled},{"mirror_camera",g_mmd.cameraSettings.mirror},
     {"audio_recorded",false},{"camera_file",g_mmd.cameraFile},{"antialiasing",j.opt.followAA?"game":"FXAA matte"}};
   nlohmann::json actors=nlohmann::json::array();
   if(j.opt.layered)j.manifest["background_format"]=j.opt.jpegBackground?"jpeg":"png";
   if(j.opt.layered&&j.opt.jpegBackground){j.manifest["jpeg_quality"]=j.opt.jpegQuality;j.manifest["jpeg_subsampling"]="444";}
-  for(auto &a:j.actors)actors.push_back({{"slot",a.slot+1},{"motion",j.opt.squad?g_squad.slots[a.slot].file:g_mmd.file}});
+  for(auto &a:j.actors)actors.push_back({{"slot",a.slot+1},{"motion",j.opt.squad?g_squad.slots[a.slot].file:g_mmd.file},{"mirror_motion",j.opt.squad?g_squad.slots[a.slot].mirrorMotion:g_mmd.mirrorMotion}});
   j.manifest["actors"]=actors;Manifest(j.directory,j.manifest);
 }
 inline bool RestoreScene() {
@@ -304,12 +304,12 @@ inline bool RestoreScene() {
     if(life==Life::Unavailable)ok=false;
     if(life==Life::Alive)ok=mmd_visibility::Write(obj,r.hidden)&&ok;
     life=r.go.inspect(obj);if(life==Life::Unavailable)ok=false;
-    if(life==Life::Alive)ok=poser_capture::SetInt(poser_capture::api.setLayer,obj,r.layer)&&ok;
+    if(life==Life::Alive)ok=poser_capture::SetInt(poser_capture::api.setLayer,obj,mmd_visibility::ObjectLayer(obj,r.layer))&&ok;
   }
   if(poser_capture::shot) {
     auto &s=*poser_capture::shot;void *obj=nullptr;auto life=s.camera.inspect(obj);
     if(life==Life::Unavailable)ok=false;
-    if(life==Life::Alive)ok=poser_capture::SetInt(poser_capture::api.maskSet,obj,s.mask)&&ok;
+    if(life==Life::Alive)ok=poser_capture::SetInt(poser_capture::api.maskSet,obj,mmd_visibility::CameraMask(obj,s.mask))&&ok;
     life=s.hg.inspect(obj);if(life==Life::Unavailable)ok=false;
     if(life==Life::Alive)for(auto &f:s.fields)ok=f.Write(obj,true)&&ok;
   }
@@ -329,7 +329,8 @@ inline void CapturePose(void *camera) {
       Renderer entry;entry.slot=a.slot;void *go=nullptr;
       Require(mmd_visibility::Scope(r,a.root.target())==1&&entry.object.capture(r)&&
         mmd_api::Value(mmd_visibility::api.get,r,entry.hidden)&&mmd_api::Call(g_component_get_gameObject,r,nullptr,go)&&
-        entry.go.capture(go)&&mmd_api::Value(api.getLayer,go,entry.layer),"Cannot hold actor renderers");j.renderers.push_back(std::move(entry));
+        entry.go.capture(go)&&mmd_api::Value(api.getLayer,go,entry.layer),"Cannot hold actor renderers");
+      entry.layer=mmd_visibility::ObjectLayer(go,entry.layer,true);j.renderers.push_back(std::move(entry));
     }
   }
   Log("[MMD-RECORD] retained bones=%zu renderers=%zu; background excludes actor layer=%d",j.bones.size(),j.renderers.size(),poser_capture::shot->layer);
@@ -380,7 +381,7 @@ inline void ApplyPassVisibility() {
       for(auto &f:s.fields)Require(f.Write(s.hg.target(),false),"Cannot enable recording alpha");
       Require(poser_capture::SetInt(poser_capture::api.maskSet,s.camera.target(),int(uint32_t(1)<<s.layer)),"Cannot isolate recording camera");
     } else {
-      Require(poser_capture::SetInt(poser_capture::api.maskSet,s.camera.target(),int(uint32_t(s.mask)&~(uint32_t(1)<<s.layer))),"Cannot exclude recording actors");
+      Require(poser_capture::SetInt(poser_capture::api.maskSet,s.camera.target(),int(uint32_t(mmd_visibility::CameraMask(s.camera.target(),s.mask))&~(uint32_t(1)<<s.layer))),"Cannot exclude recording actors");
     }
   }
 }
@@ -648,7 +649,8 @@ inline void Tick(double now,bool allowed) {
       t.seek(0,now);g_mmd.audio.stop();Actors();
       if(j.opt.squad)for(auto &a:g_squad.actors){if(a)++a->saved.terrain.epoch;}
       else ++g_mmd.session.terrain.epoch;
-      NewDirectory();j.clock.acquire(j.plan.fps);j.warmStarted=now;j.phase=Phase::Warm;
+      NewDirectory();
+      j.clock.acquire(j.plan.fps);j.warmStarted=now;j.phase=Phase::Warm;
       Sample(0,false);Log("[MMD-RECORD] start fps=%d frames=%u layers=%zu actors=%zu warmup=%d asyncGPU=%d fastPNG=%d directory=%s",j.plan.fps,j.plan.frames,j.passes.size(),j.actors.size(),j.opt.warmup,int(async),int(j.opt.fastPng),lastDirectory.c_str());
     } else if(j.phase==Phase::Warm) {
       Validate();Require(now-j.started<30,u8"人物或衣物预热超时");

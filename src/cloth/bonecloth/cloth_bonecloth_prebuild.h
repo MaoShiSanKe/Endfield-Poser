@@ -109,11 +109,20 @@ static bool ClothBonePrebuildReference(void *process,bool capture) {
     Vector3 lp{},scale{},live{},localScale{};Quaternion lq{},liveQ{};
     memcpy(&lp,positions.data()+12*n,12);memcpy(&lq,rotations.data()+16*n,16);
     eiem_cloth_surface::OutputMatrix world{};double normalized[3]{};
-    if(!SurfaceOutputMatrix(bone,world)||!eiem_cloth_rebuild::PrebuildReferenceScale(s.referenceInverse,cloth,world,normalized))
+    bool collapsed=false;
+    const bool poseRead=SurfaceVisiblePose(bone,live,liveQ,localScale);
+    const bool matrixRead=poseRead&&ClothBoneReferenceWorld(b,bone,live,liveQ,localScale,world,collapsed),passive=s.profile->Passive(b);
+    if(!matrixRead||!eiem_cloth_rebuild::PrebuildReferenceScale(s.referenceInverse,cloth,world,normalized,passive)) {
+      const bool localRead=SurfaceVisiblePose(bone,live,liveQ,localScale);
+      Log("[CLOTH-BONE-PREBUILD-SCALE] component=%s bone=%s parent=%s passive=%d matrixRead=%d uniform=%d orthogonal=%d localRead=%d localScale=%g,%g,%g assetScale=%g,%g,%g worldAxes=(%g,%g,%g)(%g,%g,%g)(%g,%g,%g)",
+          s.profile->component,name,pn,passive,matrixRead,eiem_cloth_rebuild::UniformPositive(world),eiem_cloth_rebuild::OrthogonalPositive(world),localRead,
+          localScale.x,localScale.y,localScale.z,asset.scale.x,asset.scale.y,asset.scale.z,
+          world.v[0],world.v[1],world.v[2],world.v[4],world.v[5],world.v[6],world.v[8],world.v[9],world.v[10]);
       return ClothBonePrebuildFailure("native-proxy-current-bone-scale",process);
+    }
     scale={float(normalized[0]),float(normalized[1]),float(normalized[2])};
     if(!ClothSameLocal(lp,lq,asset.position,asset.rotation)||
-        !SurfaceVisiblePose(bone,live,liveQ,localScale)||!SurfaceVisibleSame(localScale,asset.scale)) {
+        !poseRead||(!collapsed&&!SurfaceVisibleSame(localScale,asset.scale))) {
       Log("[CLOTH-BONE-PREBUILD-REFERENCE] bone=%s cachedLocal=%g,%g,%g assetLocal=%g,%g,%g normalizedWorldScale=%g,%g,%g localScale=%g,%g,%g",
           name,lp.x,lp.y,lp.z,asset.position.x,asset.position.y,asset.position.z,scale.x,scale.y,scale.z,localScale.x,localScale.y,localScale.z);
       return ClothBonePrebuildFailure("natural-local-pose-or-scale",process);
@@ -121,6 +130,7 @@ static bool ClothBonePrebuildReference(void *process,bool capture) {
     if(capture) {
       r.bone=ClothProtect(bone);r.parent=ClothProtect(parent);if(!r.bone.handle||!r.parent.handle)return false;
       r.local=lp;r.rotation=lq;r.referenceScale=scale;
+      if(collapsed)Log("[CLOTH-BONE-COLLAPSED] component=%s bone=%s source=prebuild terminalConfirmed=1 temporaryReferenceScale=1 visibleScalePreserved=1",s.profile->component,name);
     } else if(ClothTarget(r.bone)!=bone||ClothTarget(r.parent)!=parent||!ClothSameLocal(lp,lq,r.local,r.rotation)||
         !SurfaceVisibleSame(scale,r.referenceScale))return false;
   }

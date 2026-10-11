@@ -136,7 +136,12 @@ try {
     if ($CheckOnly) { throw '-CheckOnly 仅用于 -Action Update。' }
     Assert-GameStopped
 
-    $ownedNames = @('plugin\poser.dll', 'd3dcompiler_47.dll', 'vulkan-1.dll')
+    $loaderNames = @('d3dcompiler_47.dll', 'vulkan-1.dll')
+    $dllNames = @('plugin\poser.dll') + $loaderNames
+    # Recognize receipts from the removed background feature for safe cleanup.
+    $retiredMediaNames = @('plugin\media-tools\ffmpeg.exe', 'plugin\media-tools\ffprobe.exe', 'plugin\media-tools\ffmpeg-gpl.txt', 'plugin\media-tools\ffmpeg-source.txt')
+    $ownedNames = $dllNames + $retiredMediaNames
+    $originalPattern = '^plugin\\poser-backups\\[a-zA-Z0-9-]+\\(' + (($ownedNames | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
     $manifestRel = 'plugin\poser-install.json'
     $manifestPath = Get-Target $manifestRel
     $oldFiles = @{}
@@ -147,7 +152,7 @@ try {
             if ($entry.path -notin $ownedNames -or $oldFiles.ContainsKey($entry.path)) { throw 'Invalid installation record paths.' }
             if ($entry.installed_sha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'Invalid installed hash.' }
             if ($entry.original) {
-                if ($entry.original -notmatch '^plugin\\poser-backups\\[a-zA-Z0-9-]+\\(plugin\\poser\.dll|d3dcompiler_47\.dll|vulkan-1\.dll)$' -and
+                if ($entry.original -notmatch $originalPattern -and
                     $entry.original -notin @('d3dcompiler_47.dll.backup', 'vulkan-1.dll.backup')) {
                     throw 'Invalid original backup path.'
                 }
@@ -189,7 +194,7 @@ try {
                 $resourceFiles[$entry.name] = $entry
             }
         }
-        foreach ($relative in $ownedNames) {
+        foreach ($relative in $dllNames) {
             $source = Join-Path $sourceDir $relative
             if ($relative -ne 'plugin\poser.dll' -and -not (Test-Path -LiteralPath $source)) {
                 $source = Join-Path $sourceDir ('plugin\' + $relative)
@@ -230,7 +235,7 @@ try {
                 $original = $prior.original
                 $originalHash = $prior.original_sha256
             } elseif ($exists) {
-                if ($item.path -ne 'plugin\poser.dll' -and (Test-OurProxy $destination)) {
+                if ($item.path -in $loaderNames -and (Test-OurProxy $destination)) {
                     $legacy = $item.path + '.backup'
                     if (Test-Path -LiteralPath (Get-Target $legacy) -PathType Leaf) {
                         if (Test-OurProxy (Get-Target $legacy)) { throw "Legacy backup contains another proxy: $legacy" }
@@ -251,6 +256,20 @@ try {
         }
         # A package without the optional Vulkan proxy must retain its old record.
         foreach ($relative in $oldFiles.Keys) {
+            if ($relative -in $retiredMediaNames) {
+                $prior = $oldFiles[$relative]
+                $destination = Get-Target $relative
+                if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                    if ((Get-Sha $destination) -ne $prior.installed_sha256) {
+                        Write-Warning "保留被修改的旧视频组件：$relative"
+                        continue
+                    }
+                    $restore = if ($prior.original) { Get-Target $prior.original } else { $null }
+                    # All removals use the same verified backup/rollback as DLL updates.
+                    $operations.Add(@{ path = $relative; source = $restore })
+                }
+                continue
+            }
             if ($relative -notin @($newFiles | ForEach-Object { $_.path })) { $newFiles.Add($oldFiles[$relative]) }
         }
         foreach ($item in $resources) {
@@ -290,7 +309,7 @@ try {
             foreach ($relative in $oldFiles.Keys) {
                 $prior = $oldFiles[$relative]
                 $destination = Get-Target $relative
-                if ($relative -ne 'plugin\poser.dll' -and $otherPlugins.Count -gt 0) {
+                if ($relative -in $loaderNames -and $otherPlugins.Count -gt 0) {
                     Write-Warning "Other plugin DLLs exist; keeping loader: $relative"
                     continue
                 }

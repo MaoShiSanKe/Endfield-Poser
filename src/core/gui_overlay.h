@@ -1,5 +1,7 @@
 #pragma once
 
+#include "clean_view_state.h"
+
 // 精简自 {EIEM}/src/gui.h：只保留 D3D11 + DComp 透明覆盖窗 + ImGui 渲染循环。
 // 业务面板由外部提供 DrawPoserGui()，本文件不关心任何游戏逻辑。
 
@@ -127,7 +129,7 @@ static volatile LONG g_hotkeyCaptureVK = 0;
 static volatile LONG g_hotkeyCaptureCtrl = 0;
 
 static DWORD WINAPI HotkeyPollThread(LPVOID) {
-  poser::HotkeyEdge toggleEdge,freezeEdge,mmdEdges[4];
+  poser::HotkeyEdge toggleEdge,freezeEdge,cleanEdge,escapeEdge,mmdEdges[4];
   bool prevLBtn = false;
   static bool prevAll[256] = {};
   int lastCapture = 0;
@@ -193,6 +195,8 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
       // 捕获期间不触发正常热键
       toggleEdge.down = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
       freezeEdge.down = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      cleanEdge.down=(GetAsyncKeyState(g_cleanViewVK)&0x8000)!=0;
+      escapeEdge.down=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0;
       for(int i=0;i<4;++i) mmdEdges[i].down=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
       Sleep(5);
       continue;
@@ -219,6 +223,11 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
       InterlockedIncrement(&g_hotkeyToggleReq);
     if (freezeEdge.sample(f,poser_agreement::Allowed() && allowed(g_freezeVK,g_freezeCtrl)))
       InterlockedIncrement(&g_hotkeyFreezeReq);
+    const bool clean=(GetAsyncKeyState(g_cleanViewVK)&0x8000)!=0&&(!g_cleanViewCtrl||ctrl);
+    if(cleanEdge.sample(clean,poser_agreement::Allowed()&&allowed(g_cleanViewVK,g_cleanViewCtrl)))
+      poser_clean_view::Toggle();
+    if(escapeEdge.sample((GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0,ourFocus))
+      poser_clean_view::Request(poser_clean_view::Visible);
     Sleep(5);
   }
   return 0;

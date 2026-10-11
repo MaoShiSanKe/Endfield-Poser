@@ -37,8 +37,11 @@ struct Frame {
 };
 inline mmd::CameraPose PlaceCamera(const Frame &frame,const mmd::CameraSettings &settings,
                                   Vec3 start,Quat anchor,Vec3 delta,Vec3 correction={}) {
-  const auto &c=frame.camera;
-  const Quat basis=NormQ(anchor*Quat::AxisAngle({0,1,0},settings.yaw*.01745329252f)*Conj(frame.hasAnchor?frame.anchor:Quat{}));
+  auto c=frame.camera;
+  const Quat local=Conj(frame.hasAnchor?frame.anchor:Quat{});
+  c.position=local*c.position;c.target=local*c.target;c.rotation=NormQ(local*c.rotation);
+  if(settings.mirror){c.position=mmd::MirrorX(c.position);c.target=mmd::MirrorX(c.target);c.rotation=mmd::MirrorX(c.rotation);}
+  const Quat basis=NormQ(anchor*Quat::AxisAngle({0,1,0},settings.yaw*.01745329252f));
   Vec3 origin=start;
   if(settings.origin==mmd::CameraOrigin::Follow) {auto follow=delta-correction;if(!settings.followVertical)follow.y=0;origin=origin+follow;}
   if(settings.followCorrection)origin=origin+correction;

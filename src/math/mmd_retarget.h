@@ -309,7 +309,7 @@ class Retargeter {
   RigEvaluator eval_;
   std::array<int, 55> sourceRole_;
   std::array<Quat, 55> alignedRest_;
-  std::array<bool, 55> affected_;
+  std::array<bool, 55> mirrorAffected_{}, affected_;
   std::vector<Quat> neutralLocal_;
   std::vector<ArmTwistBinding> armTwists_;
   std::array<bool,30> nativeFingers_{};
@@ -461,7 +461,7 @@ public:
     clip_ = &clip;
     target_ = &target;
     sourceRole_.fill(-1);
-    affected_.fill(false);
+    affected_.fill(false);mirrorAffected_.fill(false);
     bool bodyMotion = false;
     for (const auto &track : clip.bones)
       bodyMotion = bodyMotion || !EyeBone(track.first);
@@ -611,18 +611,20 @@ public:
                        Conj(target.bones[targetParent].restRot) * rest);
       }
       alignedRest_[r] = rest;
+      for(bool mirror:{false,true}) {
       std::set<int> seen;
       std::function<bool(int)> affects = [&](int i) {
         if (i < 0 || !seen.insert(i).second)
           return false;
         auto &b = source.bones[i];
-        return eval_.hasTrack(i) || affects(b.parent) ||
+        return eval_.hasTrack(i,mirror) || affects(b.parent) ||
                affects(b.grant);
       };
       // VMD omits neutral bones. A body clip still needs a coherent neutral
       // parent chain, including links driven exclusively by IK controllers.
-      affected_[r] =
+      (mirror?mirrorAffected_:affected_)[r] =
           affects(si) || (bodyMotion && r != 21 && r != 22 && r != 23);
+      }
     }
     output.localRot.resize(target.bones.size());
     output.worldRot.resize(target.bones.size());
@@ -645,13 +647,14 @@ public:
   void sample(double frame, float scale, bool inPlace, float height,
               IkMode mode = IkMode::FollowMotion,
               const MotionAmplitude &amplitude = {},
-              const MotionCalibration &calibration = {}) {
-    eval_.sample(frame, mode);
+              const MotionCalibration &calibration = {},bool mirror=false) {
+    eval_.sample(frame, mode,mirror);
+    const auto &affected=mirror?mirrorAffected_:affected_;
     output.legIkActive = {false, false};
     output.rootOffset = {};
     output.sizingStatus.fill(0);
     int hip = sourceRole_[0];
-    if (hip >= 0 && affected_[0])
+    if (hip >= 0 && affected[0])
       output.rootOffset =
           basis_ * CalibratedTravel(eval_.pose.positions[hip] - source_->bones[hip].rest, calibration) *
           scale;
@@ -665,7 +668,7 @@ public:
       output.localRot[i] = b.localRot;
       output.write[i] = false;
       int r = b.role;
-      if (r >= 0 && sourceRole_[r] >= 0 && affected_[r]) {
+      if (r >= 0 && sourceRole_[r] >= 0 && affected[r]) {
         Quat desired = NormQ(basis_ * eval_.pose.rotations[sourceRole_[r]] *
                              Conj(basis_) * alignedRest_[r]);
         const int side=r>=39?1:0,hand=17+side;
@@ -688,6 +691,9 @@ public:
         output.localRot[i] = NormQ(Conj(parent) * desired);
         output.write[i] = true;
       }
+      // When toggling mirror, an eye keyed only on the other side must return
+      // to neutral rather than retain the previous mirrored frame.
+      if((r==21||r==22)&&(affected_[r]||mirrorAffected_[r]))output.write[i]=true;
       output.worldRot[i] =
           b.parent >= 0 ? NormQ(output.worldRot[b.parent] * output.localRot[i])
                         : output.localRot[i];
@@ -707,7 +713,7 @@ public:
           saIndex = sourceRole_[ar];
       std::string controller = side ? u8"右足IK" : u8"左足IK";
       if (a < 0 || b < 0 || c < 0 || sc < 0 || sb < 0 || saIndex < 0 ||
-          !affected_[ar] ||
+          !affected[ar] ||
           !eval_.ikEnabled(source_->find(controller), frame, mode))
         continue;
       Vec3 pa = output.worldPos[a], pb = output.worldPos[b],

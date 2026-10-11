@@ -118,7 +118,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       ClothActorScope clothScope(unsigned(i)+1);
       s_collisionInspect.store(true);
       const auto cloth=CollisionGetUi();
-      slots.push_back({{"slot",i+1},{"enabled",slot.enabled},{"member",slot.member},
+      slots.push_back({{"slot",i+1},{"enabled",slot.enabled},{"mirror_motion",slot.mirrorMotion},{"member",slot.member},
         {"ready",s.roster.members[i].animator!=nullptr},{"file",slot.file},{"status",slot.status},
         {"calibrated",slot.calibrated},{"calibration",slot.calibration},
         {"independent_motion_calibration",g_mmd.squadMotion[i].independent},
@@ -238,6 +238,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"adaptation_file",m.adaptationFile},
       {"music_file",m.musicFile},{"music_enabled",m.musicEnabled},
       {"music_playing",m.audio.running()},{"music_offset",m.musicOffset},
+      {"mute_game_music",m.muteGameMusic},{"game_music_muted",mmd_music_mute::Pending()},
+      {"game_music_status",mmd_music_mute::status},{"mirror_motion",m.mirrorMotion},{"mirror_camera",m.cameraSettings.mirror},
       {"music_volume",m.musicVolume},{"music_error",m.musicError},
       {"music_duration",m.audio.clip() ? m.audio.clip()->duration() : 0},
       {"game_frame_sync",g_frameDiagnostics.gameDriven},

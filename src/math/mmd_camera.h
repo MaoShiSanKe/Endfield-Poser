@@ -1,5 +1,6 @@
 #pragma once
 #include "mmd_motion.h"
+#include "mmd_mirror.h"
 
 namespace mmd {
 inline CameraKey SampleCamera(const std::vector<CameraKey> &keys, double frame,
@@ -24,7 +25,7 @@ inline CameraKey SampleCamera(const std::vector<CameraKey> &keys, double frame,
 enum class CameraOrigin { File = 0, Follow = 1 };
 enum class CameraCutMode { Adjacent = 0, Continuous = 1, Manual = 2 };
 struct CameraSettings {
-  bool enabled = true, followVertical = true;
+  bool enabled = true, followVertical = true, mirror = false;
   CameraOrigin origin = CameraOrigin::File;
   CameraCutMode cutMode = CameraCutMode::Adjacent;
   std::vector<uint32_t> cutFrames;
@@ -138,8 +139,8 @@ inline CameraPose PlaceCamera(const CameraKey &key, const CameraSettings &settin
   }
   if(settings.followCorrection) origin=origin+placementCorrection;
   CameraPose pose;
-  pose.target = origin + basis * (key.target * scale) + sourceToWorld * settings.offset;
-  pose.rotation = NormQ(basis * CameraOrbit(key.rotation));
+  pose.target = origin + basis * ((settings.mirror?MirrorX(key.target):key.target) * scale) + sourceToWorld * settings.offset;
+  pose.rotation = NormQ(basis * (settings.mirror?MirrorX(CameraOrbit(key.rotation)):CameraOrbit(key.rotation)));
   pose.position = pose.target + pose.rotation * Vec3{0,0,distance};
   pose.perspective = key.perspective;
   if (!pose.perspective && distance > 1e-5f)

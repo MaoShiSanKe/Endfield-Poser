@@ -14,6 +14,8 @@ void Log(const char *fmt, ...);
 // 用字母的代价：游戏内文本框/聊天里打字会误触发（插件自己面板的输入框已做屏蔽）。
 static int g_guiToggleVK = 'L';
 static bool g_guiToggleCtrl = false;    // 是否要求按住 Ctrl
+static int g_cleanViewVK = 'H';
+static bool g_cleanViewCtrl = true;
 static int g_screenshotVK = VK_F8;      // 截图
 // 冻结 / 解冻：默认 P
 static int g_freezeVK = 'P';
@@ -377,6 +379,8 @@ static bool LoadPoserConfig() {
     else if (strcmp(key, "screenshot_key") == 0)  g_screenshotVK = ParseVK(val, VK_F8);
     else if (strcmp(key, "freeze_key") == 0)
       ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
+    else if (strcmp(key, "clean_view_key") == 0)
+      ParseHotkey(val, &g_cleanViewVK, &g_cleanViewCtrl, 'H', true);
     else if (strncmp(key, "mmd_", 4) == 0) {
       for (int i=0;i<4;++i)
         if (strcmp(key,k_mmdHotkeyKeys[i])==0)

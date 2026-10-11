@@ -20,7 +20,7 @@ inline float CameraSourceHeight(const RigDefinition &rig) {
   return std::isfinite(span)&&span>1&&span<100?span:15.6f;
 }
 inline nlohmann::json WriteCameraSettings(const CameraSettings &s) {
-  return {{"version",1},{"enabled",s.enabled},{"origin",int(s.origin)},
+  return {{"version",1},{"enabled",s.enabled},{"mirror",s.mirror},{"origin",int(s.origin)},
     {"cut_mode",int(s.cutMode)},{"cut_frames",s.cutFrames},{"follow_vertical",s.followVertical},
     {"offset",{s.offset.x,s.offset.y,s.offset.z}},{"scale",s.scale},{"link_scale",s.linkScale},
     {"distance_scale",s.distanceScale},{"yaw",s.yaw},{"fov_offset",s.fovOffset},
@@ -38,7 +38,7 @@ inline CameraSettings ReadCameraSettings(const nlohmann::json &j) {
   int origin=j.value("origin",0),cuts=j.value("cut_mode",0);
   if(origin<0||origin>1||cuts<0||cuts>2)throw std::runtime_error("Invalid camera mode");
   s.origin=CameraOrigin(origin);s.cutMode=CameraCutMode(cuts);
-  s.enabled=j.value("enabled",true);s.followVertical=j.value("follow_vertical",true);
+  s.enabled=j.value("enabled",true);s.mirror=j.value("mirror",false);s.followVertical=j.value("follow_vertical",true);
   s.linkScale=j.value("link_scale",true);s.autoHeight=j.value("auto_height",true);
   s.followCorrection=j.value("follow_correction",true);
   s.scale=number("scale",.08f,.001f,1);s.distanceScale=number("distance_scale",1,.05f,10);

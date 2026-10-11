@@ -46,7 +46,8 @@ static void DrawMmdSquadPanel() {
   ImGui::SameLine();
   ImGui::Checkbox(u8"原地播放", &s.inPlace);
   ImGui::EndDisabled();
-  ImGui::TextWrapped("%s", s.status.c_str());
+  const auto preparation=MmdSquadClothPreparationStatus();
+  ImGui::TextWrapped("%s", preparation.empty()?s.status.c_str():preparation.c_str());
   if (s.loading)
     ImGui::TextDisabled(u8"正在读取动作…");
   ImGui::Separator();
@@ -142,6 +143,7 @@ static void DrawMmdSquadPanel() {
           ImGui::SameLine();
           if (ImGui::SmallButton(u8"单独校准动作…")) {s.hotkeys = true; MmdOpenMotionCalibration(i + 1);}
           ImGui::TextDisabled(g_mmd.squadMotion[i].independent ? u8"使用独立动作校准" : u8"使用共用动作校准");
+          ImGui::Checkbox(u8"镜像此队员动作",&slot.mirrorMotion);
           ImGui::SliderFloat3(u8"左右 / 上下 / 前后", &slot.offset.x, -10, 10, "%.2f m");
           ImGui::SliderFloat(u8"朝向偏移", &slot.yaw, -180, 180, "%.1f");
           ImGui::SliderFloat(u8"高度修正", &slot.height, -1, 1, "%.3f");
@@ -186,6 +188,8 @@ static void DrawMmdSquadPanel() {
         if (g_mmd.audio.clip()) {
           DrawMmdFile(g_mmd.musicFile);
           ImGui::Checkbox(u8"播放音乐", &g_mmd.musicEnabled);
+          ImGui::Checkbox(u8"播放音乐时静音游戏背景音乐",&g_mmd.muteGameMusic);
+          if(!mmd_music_mute::status.empty())ImGui::TextWrapped("%s",mmd_music_mute::status.c_str());
           ImGui::SliderFloat(u8"音乐音量", &g_mmd.musicVolume, 0, 1, "%.2f");
           ImGui::SliderFloat(u8"音乐偏移（秒）", &g_mmd.musicOffset, -120, 120, "%.2f");
         }

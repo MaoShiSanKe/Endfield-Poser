@@ -205,6 +205,8 @@ $tests = @(
   @{ Name = 'test_mod_bridge'; Src = 'tests\test_mod_bridge.cpp' },
   @{ Name = 'test_mod_bridge_runtime'; Src = 'tests\test_mod_bridge_runtime.cpp' },
   @{ Name = 'test_mmd_audio'; Src = 'tests\test_mmd_audio.cpp' },
+  @{ Name = 'test_mmd_mirror'; Src = 'tests\test_mmd_mirror.cpp' },
+  @{ Name = 'test_mmd_music_mute'; Src = 'tests\test_mmd_music_mute.cpp' },
   @{ Name = 'test_frame_driver'; Src = 'tests\test_frame_driver.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
   @{ Name = 'test_mmd_squad'; Src = 'tests\test_mmd_squad.cpp' },
@@ -225,6 +227,7 @@ $tests = @(
   @{ Name = 'test_eye_gaze_runtime'; Src = 'tests\test_eye_gaze_runtime.cpp' }
   @{ Name = 'test_blush_runtime'; Src = 'tests\test_blush_runtime.cpp' }
   @{ Name = 'test_frame_limit'; Src = 'tests\test_frame_limit.cpp' }
+  @{ Name = 'test_clean_view'; Src = 'tests\test_clean_view.cpp' }
   @{ Name = 'test_transparent_capture'; Src = 'tests\test_transparent_capture.cpp' }
   @{ Name = 'test_mmd_recording'; Src = 'tests\test_mmd_recording.cpp' }
   @{ Name = 'test_mmd_recording_runtime'; Src = 'tests\test_mmd_recording_runtime.cpp' }

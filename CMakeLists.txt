@@ -71,12 +71,13 @@ if(WIN32)
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h src/editor/panel_scale.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/tool_close_state.h src/core/plugin_paths.h src/core/proxy_loader.h
-    src/game/mmd_audio.h src/math/mmd_audio_sync.h
+    src/game/mmd_audio.h src/game/mmd_music_mute.h src/math/mmd_audio_sync.h src/math/mmd_mirror.h
     src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h src/math/eye_gaze_profile.h
     src/game/first_person.h src/math/first_person.h
     src/game/blush.h src/math/blush.h
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
+    src/core/clean_view_state.h src/game/clean_view.h
     src/math/mmd_thumb.h resources/character-thumbs/builtin.h
     src/math/mmd_motion_calibration.h src/editor/panel_mmd_motion_calibration.h
     src/game/mmd_terrain.h src/math/mmd_terrain.h
@@ -191,6 +192,7 @@ add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
 add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
 add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
+add_poser_test(test_mmd_mirror tests/test_mmd_mirror.cpp)
 add_poser_test(test_camera_repair tests/test_camera_repair.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 add_poser_test(test_mod_bridge tests/test_mod_bridge.cpp)
@@ -242,6 +244,10 @@ if(MSVC)
   target_link_libraries(test_layered_readback PRIVATE d3d11)
   add_poser_test(test_overlay_device tests/test_overlay_device.cpp)
   target_link_libraries(test_overlay_device PRIVATE d3d11)
+  add_poser_test(test_mmd_music_mute tests/test_mmd_music_mute.cpp)
+  target_include_directories(test_mmd_music_mute PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_mmd_music_mute PRIVATE /EHa)
+  target_link_libraries(test_mmd_music_mute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_mmd_audio tests/test_mmd_audio.cpp)
   target_compile_options(test_mmd_audio PRIVATE /EHa)
   add_poser_test(test_cloth_runtime tests/test_cloth_runtime.cpp)
@@ -264,6 +270,10 @@ if(MSVC)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
   add_poser_test(test_mmd_environment_runtime tests/test_mmd_environment_runtime.cpp)
   add_poser_test(test_frame_limit tests/test_frame_limit.cpp)
+  add_poser_test(test_clean_view tests/test_clean_view.cpp)
+  target_include_directories(test_clean_view PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_clean_view PRIVATE /EHa)
+  target_link_libraries(test_clean_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_transparent_capture tests/test_transparent_capture.cpp)
   target_include_directories(test_transparent_capture PRIVATE deps/minhook_lib/include)
   target_compile_options(test_transparent_capture PRIVATE /EHa)

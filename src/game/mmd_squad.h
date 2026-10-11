@@ -4,7 +4,7 @@
 #include "math/mmd_squad.h"
 
 struct MmdSquadSlot {
-  bool enabled=true;
+  bool enabled=true,mirrorMotion=false;
   mmd::MotionClip clip;
   std::shared_ptr<const blender_bridge::Clip> edited;
   std::set<std::string> faceOverrides;
@@ -24,6 +24,7 @@ struct MmdSquadActor {
   MmdSession saved;
   std::vector<AllBone> bones;
   mmd::RetargetProfile profile;
+  std::vector<bool> nativeScaleTracks;
   mmd::RetargetProfile playbackProfile;
   std::vector<int> editedBoneMap;
   blender_bridge::Frame sample;
@@ -117,10 +118,26 @@ static bool MmdSquadClothHolding() {
   }
   return false;
 }
+static std::string MmdSquadClothPreparationStatus() {
+  if(!g_squad.active)return {};
+  std::string failed,waiting;
+  for(unsigned n=0;n<4;++n)if(g_squad.actors[n]) {
+    ClothActorScope scope(n+1);
+    const auto state=g_clothPlaybackGate.StateFor(1u,s_clothRequestGeneration);
+    const bool failure=state==eiem_playback::Preparation::Failed;
+    if(!failure&&state!=eiem_playback::Preparation::Waiting&&state!=eiem_playback::Preparation::Prepared)continue;
+    auto &list=failure?failed:waiting;
+    if(!list.empty())list+=u8"、";
+    list+=std::to_string(n+1);
+  }
+  if(!failed.empty())return u8"第 "+failed+u8" 位队员衣物物理增强准备失败，全队播放尚未开始。请停止后重试，或在“物理”中关闭“全队衣物物理增强”。";
+  if(!waiting.empty())return u8"正在等待第 "+waiting+u8" 位队员的衣物物理就绪，全队时间轴暂时保持。";
+  return {};
+}
 static void MmdSquadSyncAudio() {
   if(g_mmdOfflineRecording)return;
   try {g_mmd.audio.sync(g_squad.timeline,g_squad.active,g_mmd.musicEnabled,g_mmd.musicOffset,g_mmd.musicVolume);}
-  catch(const std::exception &e) {g_mmd.musicError=e.what();g_mmd.musicEnabled=false;}
+  catch(const std::exception &e) {g_mmd.audio.close();g_mmd.musicError=e.what();g_mmd.musicEnabled=false;}
 }
 
 // Only used while preparing a rig on the game thread, under g_poseMutex.
@@ -467,22 +484,27 @@ static void MmdSquadSampleActor(int index, double frame) {
   const bool preview=s.editing&&s.previewReady;
   if(!slot.edited&&!preview) {
     if(a.nativeSample)a.mapper.bind(s.rig,slot.clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
-    a.nativeSample=false;a.mapper.sample(frame,a.scale,false,0,s.ikMode,settings.amplitude,settings.motion);return;
+    a.nativeSample=false;a.mapper.sample(frame,a.scale,false,0,s.ikMode,settings.amplitude,settings.motion,slot.mirrorMotion);return;
   }
   a.nativeSample=true;
   a.sample=preview?s.previewFrames[index]:slot.edited->sample(frame/30.);
   a.playbackProfile=a.profile;
+  a.nativeScaleTracks.assign(a.profile.bones.size(),false);
   std::vector<Quat> rotations;std::vector<bool> writes(a.bones.size(),false);
   for(const auto &b:a.profile.bones)rotations.push_back(b.localRot);
   for(const auto &b:a.sample.bones) {
     int i=preview?b.index:(b.index<int(a.editedBoneMap.size())?a.editedBoneMap[b.index]:-1);
     if(i<0||i>=int(writes.size()))continue;
     writes[i]=true;rotations[i]=b.rotation;a.playbackProfile.bones[i].localPos=b.position;
-    if(b.hasScale)a.playbackProfile.bones[i].localScale=b.scale;
+    if(b.hasScale){a.playbackProfile.bones[i].localScale=b.scale;a.nativeScaleTracks[i]=true;}
   }
   Quat basis=a.mapper.sourceBasis();
   Vec3 root=Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.root;
-  if(!preview)root=root*slot.scale;
+  if(!preview) {
+    root=root*slot.scale;
+    mmd::MirrorNative(a.profile,a.playbackProfile,rotations,writes,basis,&a.nativeScaleTracks,slot.mirrorMotion);
+    if(slot.mirrorMotion)root=mmd::MirrorX(root);
+  }
   a.mapper.sampleNative(a.playbackProfile,rotations,writes,root,basis,
       preview?mmd::MotionAmplitude{}:settings.amplitude,preview?mmd::MotionCalibration{}:settings.motion);
   a.mapper.output.rootOffset=basis*a.mapper.output.rootOffset;
@@ -494,7 +516,11 @@ static mmd::SquadAnchor::Placement MmdSquadPlacement(int index) {
     return {s.anchor.origin+basis*f.root,f.hasRootRotation?NormQ(basis*f.rootRotation):GetBoneWorldRot(a.saved.root)};
   }
   auto placement=s.anchor.place(a.mapper.sourceBasis(),a.mapper.output.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
-  if(slot.edited&&a.sample.hasRootRotation)placement.rotation=NormQ(s.anchor.basis*Quat::FromEulerDeg({0,slot.yaw,0})*Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.rootRotation);
+  if(slot.edited&&a.sample.hasRootRotation) {
+    auto local=NormQ(Conj(a.sample.hasAnchor?a.sample.anchor:Quat{})*a.sample.rootRotation);
+    if(slot.mirrorMotion)local=mmd::MirrorX(local);
+    placement.rotation=NormQ(s.anchor.basis*Quat::FromEulerDeg({0,slot.yaw,0})*local);
+  }
   return placement;
 }
 static void MmdSquadScale(MmdSquadActor &a,int index,Vec3 scale) {
@@ -540,8 +566,8 @@ static void MmdSquadApply() {
     if(!MmdSquadWorldPose(a.saved.root,placement.position,placement.rotation)) {MmdSquadStop();s.status=u8"无法设置队员位置，已停止";return;}
     for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.write[j])
       MmdRawPose(a.bones[j].transform,(slot.edited||s.editing?a.playbackProfile:a.profile).bones[j].localPos,pose.localRot[j]);
-    if(slot.edited||s.editing)for(const auto &b:a.sample.bones)if(b.hasScale)
-      MmdSquadScale(a,s.editing?b.index:a.editedBoneMap[b.index],b.scale);
+    if(slot.edited||s.editing)for(size_t i=0;i<a.nativeScaleTracks.size();++i)if(a.nativeScaleTracks[i])
+      MmdSquadScale(a,int(i),a.playbackProfile.bones[i].localScale);
     // Preserve the editor's snapshot for saving a paused squad pose.
     if(a.member.animator==g_charAnimator)CapturePoseSnapshot();
     {SMCActorScope scope(a.face.get());

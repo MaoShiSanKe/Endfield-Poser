@@ -1,4 +1,5 @@
 #pragma once
+#include "mmd_mirror.h"
 #include "math/ik_two_bone.h"
 #include "math/mmd_motion.h"
 #include <numeric>
@@ -407,7 +408,9 @@ class RigEvaluator {
   const RigDefinition *rig_ = nullptr;
   const MotionClip *clip_ = nullptr;
   std::vector<const std::vector<BoneKey> *> tracks_;
-  std::vector<std::string> trackNames_;
+  std::vector<std::string> trackNames_, mirrorNames_;
+  std::vector<const std::vector<BoneKey> *> mirrorTracks_;
+  bool mirrored_=false;
   std::vector<LocalPose> anim_;
   std::vector<Quat> ik_;
   std::vector<Quat> appendRot_;
@@ -490,6 +493,14 @@ public:
       auto track = clip.bones.find(trackNames_[i]);
       if (!trackNames_[i].empty() && track != clip.bones.end()) tracks_[i] = &track->second;
     }
+    mirrorNames_.resize(rig.bones.size());mirrorTracks_.assign(rig.bones.size(),nullptr);mirrored_=false;
+    for(size_t i=0;i<rig.bones.size();++i) {
+      auto other=rig.find(MirrorBoneName(rig.bones[i].name));
+      if(outputs.size()==55)for(int role=0;role<55;++role)if(outputs[role]==int(i)&&outputs[MirrorRole(role)]>=0){other=outputs[MirrorRole(role)];break;}
+      mirrorNames_[i]=other>=0?trackNames_[other]:MirrorBoneName(trackNames_[i]);
+      auto track=clip.bones.find(mirrorNames_[i]);
+      if(!mirrorNames_[i].empty()&&track!=clip.bones.end())mirrorTracks_[i]=&track->second;
+    }
     std::function<void(int)> need = [&](int i) {
       if (i < 0 || needed_[i])
         return;
@@ -522,18 +533,20 @@ public:
     for (const auto &kv : clip.bones)
       if (!used.count(kv.first)) unmapped.push_back(kv.first);
   }
-  bool hasTrack(int bone) const { return bone >= 0 && size_t(bone) < tracks_.size() && tracks_[bone]; }
+  bool hasTrack(int bone,bool mirror=false) const { return bone >= 0 && size_t(bone) < tracks_.size() && (mirror?mirrorTracks_:tracks_)[bone]; }
   bool ikEnabled(int controller, double frame, IkMode mode) const {
     if (std::find(controllers_.begin(), controllers_.end(), controller) == controllers_.end())
       return false;
     // Follow mode preserves FK-only clips. Force-on uses even stationary IK
     // targets from the selected rig; force-off bypasses every IK chain.
-    return SampleIk(*clip_, trackNames_[controller], frame, mode) &&
-           (!rig_->builtin || tracks_[controller] || mode == IkMode::ForceOn);
+    return SampleIk(*clip_, (mirrored_?mirrorNames_:trackNames_)[controller], frame, mode) &&
+           (!rig_->builtin || (mirrored_?mirrorTracks_:tracks_)[controller] || mode == IkMode::ForceOn);
   }
-  void sample(double frame, IkMode mode = IkMode::FollowMotion) {
+  void sample(double frame, IkMode mode = IkMode::FollowMotion,bool mirror=false) {
+    mirrored_=mirror;const auto &tracks=mirror?mirrorTracks_:tracks_;
     for (size_t i = 0; i < anim_.size(); i++) {
-      anim_[i] = tracks_[i] ? SampleBone(*tracks_[i], frame) : LocalPose{};
+      anim_[i] = tracks[i] ? SampleBone(*tracks[i], frame) : LocalPose{};
+      if(mirror){anim_[i].position=MirrorX(anim_[i].position);anim_[i].rotation=MirrorX(anim_[i].rotation);}
       ik_[i] = {};
     }
     world();

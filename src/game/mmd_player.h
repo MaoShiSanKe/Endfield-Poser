@@ -4,6 +4,7 @@
 #include "game/mmd_io.h"
 #include "game/mmd_dialog_history.h"
 #include "game/mmd_audio.h"
+#include "game/mmd_music_mute.h"
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
@@ -361,7 +362,7 @@ static std::vector<mmd_visibility::State> s_mmdVisibilityRetired;
 static bool MmdVisibilityRestore(mmd_visibility::State &state) {
   const bool owned=bool(state.lease);
   if(mmd_visibility::Restore(state)) {
-    if(owned)Log("[MMD-VISIBILITY] stage=restored original render flags released");
+    if(owned)Log("[MMD-VISIBILITY] stage=restored original render flags/layers released");
     return true;
   }
   if(!state.failed)Log("[MMD-VISIBILITY] renderer restoration deferred; retained original instance only");
@@ -372,6 +373,7 @@ static void MmdVisibilityDrain() {
   const double now=MmdNow();
   for(auto it=s_mmdVisibilityRetired.begin();it!=s_mmdVisibilityRetired.end();)
     if(now>=it->retryAt&&MmdVisibilityRestore(*it))it=s_mmdVisibilityRetired.erase(it);else ++it;
+  mmd_visibility::RestoreCulling();
 }
 static void MmdReleaseVisibility(MmdSession &session) {
   if(!session.visibility.lease)return;
@@ -388,8 +390,10 @@ static void MmdApplyVisibility(MmdSession &session,const mmd::MotionClip &clip,d
       pending|=life==mmd_visibility::Life::Unavailable||root==session.root;}
   const bool ok=!pending&&mmd_visibility::Tick(state,session.animator,session.root,mmd::SampleVisibility(clip,frame),MmdNow());
   if(!ok&&!state.failed)Log("[MMD-VISIBILITY] model display unavailable actor=%p frame=%.3f; motion continues, retained originals used for restoration",session.animator,frame);
-  if(ok&&hidden!=bool(state.lease))Log("[MMD-VISIBILITY] stage=%s actor=%p frame=%.3f renderers=%zu renderOnly=1",
-      state.lease?"hidden":"shown",session.animator,frame,state.lease?state.lease->renderers.size():size_t(0));
+  if(ok&&hidden!=bool(state.lease))Log("[MMD-VISIBILITY] stage=%s actor=%p frame=%.3f renderers=%zu layer=%d cameras=%zu renderOnly=1",
+      state.lease?"hidden":"shown",session.animator,frame,state.lease?state.lease->renderers.size():size_t(0),
+      state.lease&&state.lease->culling?state.lease->culling->layer:-1,
+      mmd_visibility::exclusion?mmd_visibility::exclusion->cameras.size():size_t(0));
   state.failed=!ok;
 }
 #include "math/mmd_face_bindings.h"
@@ -459,7 +463,8 @@ struct MmdPlayer {
   mmd::Retargeter mapper;
   mmd::Timeline timeline;
   mmd::AudioPlayer audio;
-  bool musicEnabled = true;
+  bool musicEnabled = true, muteGameMusic = false;
+  bool mirrorMotion = false;
   float musicVolume = .7f, musicOffset = 0;
   std::string musicFile, musicError;
   MmdSession session;
@@ -1371,10 +1376,11 @@ static void MmdCharacterChanging(void *nextEntity=nullptr) {
 static bool MmdClothMayAdjustAnchor(void *transform);
 static void MmdSampleBody(double seconds) {
   auto &m=g_mmd;
-  if(!m.editedBody) {m.mapper.sample(seconds*30,m.scale,m.inPlace,m.height,m.ikMode,m.amplitude,m.motionCalibration);return;}
+  if(!m.editedBody) {m.mapper.sample(seconds*30,m.scale,m.inPlace,m.height,m.ikMode,m.amplitude,m.motionCalibration,m.mirrorMotion);return;}
   const auto frame=m.editedBody->sample(seconds);
   m.editedHasRootRotation=frame.hasRootRotation;
   m.editedRootRotation=NormQ(Conj(frame.hasAnchor?frame.anchor:Quat{})*frame.rootRotation);
+  if(m.mirrorMotion)m.editedRootRotation=mmd::MirrorX(m.editedRootRotation);
   m.editedFaces=frame.faces;
   m.playbackProfile=m.profile;
   m.editedScaleTracks.assign(m.profile.bones.size(),false);
@@ -1392,6 +1398,8 @@ static void MmdSampleBody(double seconds) {
     basis=mmd::BodyBasis(p(13),p(14),p(0),p(10));
   }
   Vec3 root=Conj(frame.hasAnchor?frame.anchor:Quat{})*frame.root;
+  mmd::MirrorNative(m.profile,m.playbackProfile,rotations,writes,basis,&m.editedScaleTracks,m.mirrorMotion);
+  if(m.mirrorMotion)root=mmd::MirrorX(root);
   m.mapper.sampleNative(m.playbackProfile,rotations,writes,root,basis,m.amplitude,m.motionCalibration);
   if(m.inPlace){m.mapper.output.rootOffset.x=0;m.mapper.output.rootOffset.z=0;}
   m.mapper.output.rootOffset.y+=m.height;

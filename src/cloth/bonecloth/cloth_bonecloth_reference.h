@@ -123,9 +123,30 @@ inline bool UniformPositive(const OutputMatrix &m) {
       m.v[4]*(m.v[1]*m.v[10]-m.v[9]*m.v[2])+m.v[8]*(m.v[1]*m.v[6]-m.v[5]*m.v[2]);
   return det>0;
 }
+inline bool ReferenceBoneMatrix(const OutputMatrix &bone,bool passive) {
+  // Passive descendants retain authored axis scales; simulated points must
+  // still have a uniform, positive, shear-free transform.
+  return passive?OrthogonalPositive(bone):UniformPositive(bone);
+}
+inline bool CollapsedLeafReference(const OutputMatrix &visible,const OutputMatrix &parent,
+    int children,const double (&position)[3],const float (&rotation)[4],
+    const float (&visibleScale)[3],const float (&sourceScale)[3],OutputMatrix &out) {
+  if(children!=0||!OutputAffine(visible)||!UniformPositive(parent))return false;
+  for(int axis=0;axis<3;++axis) {
+    if(visibleScale[axis]!=0)return false;
+    for(int row=0;row<3;++row)if(visible.v[axis*4+row]!=0)return false;
+  }
+  OutputMatrix local{};
+  if(!eiem_cloth_surface::OutputCompletedTRS(position,rotation,sourceScale,local))return false;
+  auto reference=OutputMultiply(parent,local);
+  if(!UniformPositive(reference))return false;
+  // Preserve Unity's actual float world position at distant scene origins.
+  for(int k=0;k<3;++k)reference.v[12+k]=visible.v[12+k];
+  out=reference;return true;
+}
 inline bool PrebuildReferenceScale(const OutputMatrix &cachedInverse,
-    const OutputMatrix &cloth,const OutputMatrix &bone,double (&out)[3]) {
-  if(!UniformPositive(cachedInverse)||!UniformPositive(cloth)||!UniformPositive(bone))return false;
+    const OutputMatrix &cloth,const OutputMatrix &bone,double (&out)[3],bool passive=false) {
+  if(!UniformPositive(cachedInverse)||!UniformPositive(cloth)||!ReferenceBoneMatrix(bone,passive))return false;
   double inverse2=0,current2=0;
   for(int k=0;k<3;++k){inverse2+=cachedInverse.v[k]*cachedInverse.v[k];current2+=cloth.v[k]*cloth.v[k];}
   const double factor=std::sqrt(inverse2*current2);

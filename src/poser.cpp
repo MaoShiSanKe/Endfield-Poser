@@ -32,6 +32,7 @@
 #include "config.h"
 #include "game/cloth_init.h"
 #include "game/frame_limit.h"
+#include "game/clean_view.h"
 #include "editor/panel_capture.h"
 #include "editor/panel_recording.h"
 
@@ -136,12 +137,13 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
   // （改完由管理器调用 AP_ReloadConfig 生效）。
   // 截图热键不声明：插件内没有实现（截图走 tools/screenshot.ps1），
   // 免得管理器里出现一个按了没反应的键；实现好了再加回来。
-  const int n = 6;
+  const int n = 7;
   if (max < n) return n;
   out[0] = {"Toggle Poser GUI", "gui_toggle_key", g_guiToggleVK};
   out[1] = {"Freeze / Unfreeze", "freeze_key", g_freezeVK};
   const char *labels[] = {"MMD Play", "MMD Pause", "MMD Stop", "MMD Reset"};
   for(int i=0;i<4;++i) out[2+i]={labels[i],k_mmdHotkeyKeys[i],g_mmdHotkeyVK[i]};
+  out[6]={"Hide / Restore Game UI","clean_view_key",g_cleanViewVK};
   return n;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
@@ -431,6 +433,7 @@ static void DrawPoserGuiBody() {
       const char *mmdLabels[] = {u8"MMD 播放", u8"MMD 暂停", u8"MMD 停止并恢复", u8"MMD 重置到首帧"};
       for (int i=0;i<4;++i)
         DrawHotkeySetting(mmdLabels[i],k_mmdHotkeyKeys[i],&g_mmdHotkeyVK[i],&g_mmdHotkeyCtrl[i],3+i);
+      DrawHotkeySetting(u8"隐藏 / 恢复游戏 UI","clean_view_key",&g_cleanViewVK,&g_cleanViewCtrl,7);
       if (g_hotkeyRiskyMsg[0])
         ImGui::TextDisabled("\u26a0 %s", g_hotkeyRiskyMsg);
       ImGui::TextDisabled(u8"\u70b9\u201c\u6539\u952e\u201d\u540e\u6309\u4e0b"
@@ -453,6 +456,14 @@ static void DrawPoserGuiBody() {
       poser_frame_limit::Request(frameMode==1?30:frameMode==2?60:0);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"限制整个游戏画面的目标帧率，单人、多人和 Blender 联动共用；不改变动作速度。关闭后恢复原来的帧率和垂直同步设置。仅本次运行生效。");
     if(frameMode||poser_frame_limit::held)ImGui::TextDisabled("%s",poser_frame_limit::status);
+    {
+      bool hide=poser_clean_view::requested.load()!=poser_clean_view::Visible;
+      if(ImGui::Checkbox(u8"隐藏游戏 UI",&hide))
+        poser_clean_view::Request(hide?poser_clean_view::GameOnly:poser_clean_view::Visible);
+      char key[48]{};HotkeyDisplay(g_cleanViewVK,g_cleanViewCtrl,key,sizeof(key));
+      ImGui::TextDisabled(u8"%s 隐藏 / 恢复游戏 UI；Esc 恢复",key);
+      if(hide||poser_clean_view::Pending()||poser_clean_view::failed)ImGui::TextWrapped("%s",poser_clean_view::status);
+    }
     DrawTransparentCapture();
     DrawMmdRecording();
     ImGui::Separator();
@@ -675,6 +686,7 @@ static void ExtControl(int code) {
 // 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
 // 否则头发布料会一直僵在冻结姿态。
 static void OnGuiShutdownRestore() {
+  poser_clean_view::Request(poser_clean_view::Visible);
   if(poser_close::Closing())return; // Already restored by the game-thread close flow.
   // During game shutdown its objects are being destroyed, not handed back to
   // gameplay. Avoid restoration, import joins or reattaching to a closing VM.
@@ -707,7 +719,7 @@ static void OnGuiShutdownRestore() {
   while (GetTickCount64()<deadline) {
     { std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
       if (!s_cloth.active && !s_cloth.releasing && !ClothSquadRestoring() &&
-          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && !first_person::headHolding.load() && s_mmdVisibilityRetired.empty() && poser_blush::actors.empty() && !poser_capture::busy) return; }
+          !mmd_camera::restorePending.load() && !mmd_camera::fixedHolding.load() && !first_person::headHolding.load() && s_mmdVisibilityRetired.empty() && !mmd_visibility::CullingPending() && !poser_clean_view::Pending() && poser_blush::actors.empty() && !poser_capture::busy) return; }
     Sleep(10);
   }
   Log("[CLOTH-RESTORE-PENDING] game callback has not completed shutdown restoration");
@@ -716,6 +728,7 @@ static void OnGuiShutdownRestore() {
 static void RequestToolClose() {
   if(!poser_close::state.request())return;
   g_pluginEnabled=false;g_webRunning=false;g_hotkeyPollRun=0;
+  poser_clean_view::Request(poser_clean_view::Visible);
   poser_capture::Cancel();
   InterlockedExchange(&g_mmdHotkeyRequests,0);TakeHotkeyFreeze();
   s_mmdClosing=true;poser_blender::closing=true;
@@ -725,9 +738,10 @@ static void RequestToolClose() {
 }
 static bool ToolAttachmentsRestored() {
   if(poser_capture::busy)return false;
-  if(poser_frame_limit::held||!poser_blush::actors.empty())return false;
+  if(poser_clean_view::Pending())return false;
+  if(mmd_music_mute::Pending()||poser_frame_limit::held||!poser_blush::actors.empty())return false;
   if(mmd_camera::restorePending.load()||mmd_camera::fixedHolding.load()||first_person::headHolding.load()||
-      !s_mmdVisibilityRetired.empty()||!g_frozenGrips.empty())return false;
+      !s_mmdVisibilityRetired.empty()||mmd_visibility::CullingPending()||!g_frozenGrips.empty())return false;
   for(unsigned slot=0;slot<ClothActorCount;++slot) {
     if(!s_ClothActorRequest.values[slot]&&!s_clothActors.values[slot])continue;
     ClothActorScope scope(slot);
@@ -1008,6 +1022,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   mmd_camera::sampleClock=MmdSimulationNow;
   mmd_camera::needsCamera=[](){return poser_gaze::motionLock||poser_gaze::settings.mode==eye_gaze::Mode::Camera;};
   mmd_camera::afterCamera=[](void *camera) {
+    mmd_visibility::AfterCamera(camera);
     SMCGazeCameraTick(camera);
     if(poser_recording::busy)poser_recording::AfterCamera(camera);
     if(poser_capture::busy)poser_capture::AfterCamera(camera,g_charAnimator,GetCharRootTransform(),FrameNow(),
@@ -1020,7 +1035,15 @@ static DWORD WINAPI InitThread(LPVOID) {
   };
   s_clothHostEnabled=[](){return g_pluginEnabled.load();};
   s_clothHostIdle=[](){return !MmdOwnsPose()&&!MmdSquadBusy()&&!g_mmd.preview;};
-  g_gameMaintenance = []() { poser_recording::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());poser_capture::Maintenance(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());poser_frame_limit::Tick(FrameNow(),g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing());ClothServiceActors();poser_blush::enabled=g_pluginEnabled&&!poser_close::Closing();if(!poser_blush::enabled)poser_blush::RestoreAll();ToolCloseMaintenance(); };
+  g_gameMaintenance = []() {
+    const bool allowed=g_pluginEnabled&&poser_agreement::Allowed()&&!poser_close::Closing();
+    mmd_music_mute::Tick(FrameNow(),allowed&&!g_mmdOfflineRecording&&g_mmd.muteGameMusic&&
+        g_mmd.musicEnabled&&g_mmd.musicVolume>0&&g_mmd.audio.running());
+    poser_clean_view::Tick(FrameNow(),allowed);poser_recording::Tick(FrameNow(),allowed);
+    poser_capture::Maintenance(FrameNow(),allowed);poser_frame_limit::Tick(FrameNow(),allowed);
+    ClothServiceActors();poser_blush::enabled=g_pluginEnabled&&!poser_close::Closing();
+    if(!poser_blush::enabled)poser_blush::RestoreAll();MmdVisibilityDrain();ToolCloseMaintenance();
+  };
   InstallFrameHook();
   mmd_camera::Initialize();
   StartWebServer(); // 独立 UI：localhost HTTP 服务器（浏览器打开控制窗口）

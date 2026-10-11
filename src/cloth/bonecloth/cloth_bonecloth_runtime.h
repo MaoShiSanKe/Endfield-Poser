@@ -43,6 +43,7 @@ struct ClothBoneReference {
   Quaternion rotation{}, savedRotation{};
   Vector3 inputPosition{},inputScale{};Quaternion inputRotation{};
   bool inputCaptured=false;
+  bool seedCollapsedScale=false;
   bool touched=false;
 };
 struct ClothBoneRendererRef {
@@ -319,6 +320,27 @@ static int ClothBoneIndex(void *t) {
   return -1;
 }
 #include "cloth_bonecloth_input_anchor.h"
+// A runtime terminal cloth bone can have a fully collapsed visible scale.
+// Derive a usable reference without changing that visible state. Only native
+// Initialize receives the source scale, inside the existing pose transaction.
+static bool ClothBoneReferenceWorld(int index,void *bone,Vector3 position,Quaternion rotation,
+    Vector3 scale,eiem_cloth_surface::OutputMatrix &world,bool &collapsed) {
+  collapsed=false;
+  if(!SurfaceOutputMatrix(bone,world))return false;
+  if(scale.x!=0||scale.y!=0||scale.z!=0)return true;
+  const auto &s=ClothBoneState();
+  if(!s.profile||index<0||index>=s.profile->boneCount)return false;
+  for(int n=0;n<s.profile->boneCount;++n)if(s.profile->bones[n].parent==index)return false;
+  int children=-1;
+  eiem_cloth_surface::OutputMatrix parent{},reference{};
+  if(!ClothValue(SurfaceMethod(g_transformClass,"get_childCount","System.Int32"),bone,children)||
+      !SurfaceOutputMatrix(CollisionParent(bone),parent))return false;
+  const auto source=s.profile->bones[index].scale;
+  const double p[]{position.x,position.y,position.z};
+  const float q[]{rotation.x,rotation.y,rotation.z,rotation.w},visible[]{scale.x,scale.y,scale.z},authored[]{source.x,source.y,source.z};
+  if(!eiem_cloth_rebuild::CollapsedLeafReference(world,parent,children,p,q,visible,authored,reference))return false;
+  world=reference;collapsed=true;return true;
+}
 #include "cloth_bonecloth_prebuild.h"
 static bool ClothBoneReadReference(void *process,bool capture) {
   auto &state=ClothBoneState();
@@ -359,6 +381,18 @@ static bool ClothBoneReadReference(void *process,bool capture) {
     Vector3 lp{},wp{},scale{}; Quaternion lq{},wq{};
     memcpy(&lp,local.data()+12*n,12); memcpy(&wp,positions.data()+12*n,12);
     memcpy(&lq,localQ.data()+16*n,16); memcpy(&wq,rotations.data()+16*n,16); memcpy(&scale,scales.data()+12*n,12);
+    Vector3 live{},localScale{};Quaternion liveRotation{};bool collapsed=false;
+    if(capture) {
+      if(!SurfaceVisiblePose(t,live,liveRotation,localScale))return false;
+      if(localScale.x==0&&localScale.y==0&&localScale.z==0) {
+        eiem_cloth_surface::OutputMatrix world{},cloth{};double normalized[3]{};
+        if(!ClothBoneReferenceWorld(b,t,live,liveRotation,localScale,world,collapsed)||!collapsed||
+            !SurfaceOutputMatrix(ClothTarget(s.transform),cloth)||
+            !eiem_cloth_rebuild::PrebuildReferenceScale(s.referenceInverse,cloth,world,normalized,s.profile->Passive(b)))return false;
+        scale={float(normalized[0]),float(normalized[1]),float(normalized[2])};
+        Log("[CLOTH-BONE-COLLAPSED] component=%s bone=%s source=setup terminalConfirmed=1 temporaryReferenceScale=1 visibleScalePreserved=1",s.profile->component,name);
+      }
+    }
     double worldQ[]{wq.x,wq.y,wq.z,wq.w};
     if(!std::isfinite(wp.x) || !std::isfinite(wp.y) || !std::isfinite(wp.z) ||
         !eiem_cloth_rebuild::UnitQuaternion(worldQ) ||
@@ -372,10 +406,9 @@ static bool ClothBoneReadReference(void *process,bool capture) {
         Log("[CLOTH-BONE-REFERENCE-MISMATCH] bone=%s parent=%s expectedParent=%s cachedLocal=%g,%g,%g cachedRotation=%g,%g,%g,%g",
             name,pn,expected,lp.x,lp.y,lp.z,lq.x,lq.y,lq.z,lq.w); return false;
       }
-      Vector3 live{},localScale{}; Quaternion liveRotation{};
-      if(!SurfaceVisiblePose(t,live,liveRotation,localScale) ||
+      if(!collapsed && (
           !(s.profile->Passive(b)?eiem_cloth_rebuild::PositiveAxes(localScale.x,localScale.y,localScale.z):eiem_collision::UniformPositive(CollisionV(localScale))) ||
-          fabsf(localScale.x-asset.scale.x)>.0001f || fabsf(localScale.y-asset.scale.y)>.0001f || fabsf(localScale.z-asset.scale.z)>.0001f) {
+          fabsf(localScale.x-asset.scale.x)>.0001f || fabsf(localScale.y-asset.scale.y)>.0001f || fabsf(localScale.z-asset.scale.z)>.0001f)) {
         Log("[CLOTH-BONE-REFERENCE-MISMATCH] bone=%s localScale=%g,%g,%g expectedScale=%g,%g,%g",name,
             localScale.x,localScale.y,localScale.z,asset.scale.x,asset.scale.y,asset.scale.z); return false;
       }
@@ -910,8 +943,8 @@ static bool ClothBoneSavePose() {
     if(!t || CollisionParent(t)!=ClothTarget(r.parent) ||
         !SurfaceVisiblePose(t,r.savedPosition,r.savedRotation,r.savedScale)) return false;
     eiem_cloth_surface::OutputMatrix m{};
-    if(!SurfaceOutputMatrix(t,m) || !(n<size_t(s.profile->boneCount)&&s.profile->Passive(int(n))?
-        eiem_cloth_rebuild::OrthogonalPositive(m):eiem_cloth_rebuild::UniformPositive(m))) return false;
+    if(!ClothBoneReferenceWorld(int(n),t,r.savedPosition,r.savedRotation,r.savedScale,m,r.seedCollapsedScale) || !eiem_cloth_rebuild::ReferenceBoneMatrix(m,
+        n<size_t(s.profile->boneCount)&&s.profile->Passive(int(n)))) return false;
     const double reference[]{r.referenceScale.x,r.referenceScale.y,r.referenceScale.z};
     for(int axis=0;axis<3;++axis) {
       const double expected=reference[axis]*factor;
@@ -932,7 +965,11 @@ static bool ClothBoneRestorePose() {
         SurfaceCall(t,"set_localScale","UnityEngine.Vector3",&r.savedScale) &&
         SurfaceVisiblePose(t,p,q,scale) && SurfaceVisibleSame(p,r.savedPosition) &&
         SurfaceVisibleSame(q,r.savedRotation) && SurfaceVisibleSame(scale,r.savedScale);
-    if(restored) r.touched=false;
+    if(restored) {
+      if(r.seedCollapsedScale)Log("[CLOTH-BONE-COLLAPSED] stage=visible-restored instance=%d originalScale=%g,%g,%g referenceOnly=1",
+          r.bone.id.instance,r.savedScale.x,r.savedScale.y,r.savedScale.z);
+      r.touched=false;r.seedCollapsedScale=false;
+    }
     ok &= restored;
   }
   ClothBoneState().referenceRestored=ok; return ok;
@@ -948,18 +985,24 @@ static bool ClothBoneWorldReference(void *bone,eiem_cloth_rebuild::ReferencePose
 }
 static bool ClothBoneSeedPose() {
   auto &s=ClothBoneState();
-  for(auto &r:s.bones) {
+  for(size_t n=0;n<s.bones.size();++n) {
+    auto &r=s.bones[n];
     r.touched=true; s.referenceRestored=false;
     auto bone=ClothTarget(r.bone);
+    if(r.seedCollapsedScale && n>=size_t(s.profile->boneCount))return false;
+    auto seedScale=r.seedCollapsedScale?s.profile->bones[n].scale:r.savedScale;
     if(!bone || CollisionParent(bone)!=ClothTarget(r.parent) ||
         !SurfaceCall(bone,"set_localPosition","UnityEngine.Vector3",&r.local) ||
-        !SurfaceCall(bone,"set_localRotation","UnityEngine.Quaternion",&r.rotation)) return false;
+        !SurfaceCall(bone,"set_localRotation","UnityEngine.Quaternion",&r.rotation) ||
+        (r.seedCollapsedScale && !SurfaceCall(bone,"set_localScale","UnityEngine.Vector3",&seedScale))) return false;
   }
-  for(auto &r:s.bones) {
+  for(size_t n=0;n<s.bones.size();++n) {
+    auto &r=s.bones[n];
     auto bone=ClothTarget(r.bone);Vector3 local{},scale{};Quaternion localQ{};
     if(!bone || CollisionParent(bone)!=ClothTarget(r.parent) ||
         !SurfaceVisiblePose(bone,local,localQ,scale) ||
-        !ClothSameLocal(local,localQ,r.local,r.rotation) || !SurfaceVisibleSame(scale,r.savedScale)) return false;
+        !ClothSameLocal(local,localQ,r.local,r.rotation) ||
+        !SurfaceVisibleSame(scale,r.seedCollapsedScale?s.profile->bones[n].scale:r.savedScale)) return false;
     // Initialize caches Unity's float world pose. A second parent-matrix
     // calculation can round differently after the outgoing model is moved or
     // hidden during a team change. Read the seeded old instance directly;
