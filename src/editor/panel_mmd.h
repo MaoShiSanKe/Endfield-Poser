@@ -3,6 +3,7 @@
 #include "config.h"
 #include "game/mmd_player.h"
 #include "editor/panel_mmd_adaptation.h"
+#include "editor/panel_mmd_motion_issues.h"
 #if POSER_ENABLE_XXMI_BRIDGE
 #include "editor/panel_mod_bridge.h"
 #endif
@@ -528,6 +529,7 @@ static void DrawMmdPanel() {
     if (m.loading)
       ImGui::TextDisabled(u8"正在读取文件…");
     DrawMmdFile(m.editedBody?m.editedBodyFile:m.file);
+    if(!m.editedBody&&(!m.clip.bones.empty()||!m.clip.ik.empty()))DrawMmdMotionIssueBanner(0);
     ImGui::BeginDisabled(!MmdHasContent() || m.loading || m.preview);
     if (ImGui::Button(m.timeline.state == mmd::PlayState::Playing ? u8"暂停" : u8"播放")) {
       MmdPlaybackCommand(m.timeline.state == mmd::PlayState::Playing ? 1 : 0, false);

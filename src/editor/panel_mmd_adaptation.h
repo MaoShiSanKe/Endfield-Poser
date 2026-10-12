@@ -1,6 +1,7 @@
 #pragma once
 #include "editor/panel_scale.h"
 #include "game/mmd_player.h"
+#include "editor/mmd_adaptation_draft.h"
 #include "imgui.h"
 
 static bool MmdBoneChoice(const char *label, std::string &value,
@@ -24,21 +25,14 @@ static void DrawMmdAdaptationPanel() {
   if (!ImGui::CollapsingHeader(u8"骨架适配 / 追加骨骼"))
     return;
   auto &m = g_mmd;
-  static mmd::RigAdaptation draft;
-  static int revision = -1;
-  static int editing = -1;
-  static bool dirty = false;
-  if (revision != m.adaptationRevision) {
-    draft = m.adaptation;
-    revision = m.adaptationRevision;
-    dirty = false;
-    editing = -1;
-  }
+  auto &edit=MmdEditAdaptation();auto &draft=edit.value;
+  auto &revision=edit.revision;auto &editing=edit.editing;auto &dirty=edit.dirty;
   ImGui::TextWrapped(u8"先停止动作，再追加骨骼或修改映射。应用后可播放或逐帧检"
                      u8"查，角色校准保持不变。");
-  ImGui::BeginDisabled(m.loading || m.session.active);
+  const bool busy=m.loading || m.session.active || s_mmdStartRequest.active || MmdSquadBusy() || g_blenderEditing || m.preview;
+  ImGui::BeginDisabled(busy);
   if (ImGui::Button(u8"应用适配")) {
-    if (MmdApplyAdaptation(draft, m.sourcePreset)) {
+    if (MmdCommitAdaptationDraft()) {
       revision = m.adaptationRevision;
       dirty = false;
     }
@@ -46,29 +40,38 @@ static void DrawMmdAdaptationPanel() {
   ImGui::SameLine();
   if (ImGui::Button(u8"撤销未应用修改")) {
     draft = m.adaptation;
-    dirty = false;
+    dirty = false;edit.choices.clear();
   }
   ImGui::SameLine();
   if (ImGui::Button(u8"清空适配")) {
     draft = {};
-    dirty = true;
+    dirty = true;edit.choices.clear();
   }
-  ImGui::BeginDisabled(dirty);
-  if (ImGui::Button(u8"保存适配预设"))
-    MmdBeginLoad(4);
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(m.loading || (MmdAdaptationDraftDirty() && busy));
+  if (ImGui::Button(MmdAdaptationDraftDirty()?u8"应用并保存适配预设":u8"保存适配预设")) {
+    if(!MmdAdaptationDraftDirty()||MmdCommitAdaptationDraft())MmdBeginLoad(4);
+  }
+  ImGui::EndDisabled();
   ImGui::SameLine();
+  ImGui::BeginDisabled(busy || MmdAdaptationDraftDirty());
   if (ImGui::Button(u8"载入适配预设"))
     MmdBeginLoad(3);
   ImGui::EndDisabled();
-  if (dirty)
-    ImGui::TextWrapped(u8"有未应用修改；点击“应用适配”后生效并可保存。");
+  if (MmdAdaptationDraftDirty())
+    ImGui::TextWrapped(u8"有未应用修改；“应用并保存”会先验证并应用，再保存当前映射。");
   if (!m.adaptationFile.empty())
     ImGui::TextWrapped(u8"预设文件：%s", m.adaptationFile.c_str());
+  if(!m.adaptationFile.empty()&&m.adaptationSavedRevision!=m.adaptationRevision)
+    ImGui::TextColored(ImVec4(1,.7f,.3f,1),u8"当前适配已修改，请重新保存");
+  if(!m.adaptationRestoreStatus.empty())ImGui::TextWrapped("%s",m.adaptationRestoreStatus.c_str());
+  ImGui::TextDisabled(u8"重启后自动恢复最近一次成功保存 / 载入的预设");
+  ImGui::BeginDisabled(busy);
 
   if (ImGui::TreeNode(u8"准标准骨补全")) {
     if(ImGui::SmallButton(u8"全部开启")) {
       auto next=mmd::DefaultRigAdaptation();next.extra=draft.extra;next.tracks=draft.tracks;next.roles=draft.roles;
-      next.characterThumbs=draft.characterThumbs;
+      next.characterThumbs=draft.characterThumbs;next.controls=draft.controls;next.ignoredTracks=draft.ignoredTracks;
       draft=std::move(next);dirty=true;
     }
     ImGui::TextDisabled(u8"默认全部开启，可单独关闭。载入预设时使用预设设置。");
@@ -91,6 +94,26 @@ static void DrawMmdAdaptationPanel() {
         ImGui::Checkbox(u8"额外上半身1（插入上半身2之前）", &draft.upperBody1);
     ImGui::TextWrapped(u8"操作中心默认不影响身体。分段捩骨不会重刷游戏模型权重"
                        u8"；需要对应角色部位映射才能直接输出。");
+    ImGui::TreePop();
+  }
+  if (ImGui::TreeNode(u8"动作扩展骨")) {
+    ImGui::TextWrapped(u8"从动作文件下方的“检查动作扩展骨”添加控制。这里可调整参数；修改后点击上方“应用适配”。");
+    int removeControl=-1;
+    const char *kinds[]={u8"通用握拳",u8"通用张指",u8"手臂 IK",u8"视线目标"};
+    for(int i=0;i<int(draft.controls.size());++i) {
+      auto &c=draft.controls[i];ImGui::PushID(i);
+      ImGui::TextWrapped("%s / %s",c.name.c_str(),kinds[int(c.kind)]);
+      ImGui::SameLine();if(ImGui::SmallButton(u8"删除控制"))removeControl=i;
+      if(c.kind==mmd::MotionControlKind::Grip||c.kind==mmd::MotionControlKind::Spread) {
+        dirty|=ImGui::Combo(u8"动作输入轴",&c.inputAxis,"X\0Y\0Z\0");
+        dirty|=ImGui::SliderFloat(u8"控制比例",&c.gain,-3,3,"%.2f");
+      }
+      dirty|=MmdBoneChoice(u8"控制父级",c.parent,u8"默认父级");
+      if(c.kind==mmd::MotionControlKind::ArmIk)dirty|=ImGui::Checkbox(u8"使用目标的手腕朝向",&c.wristRotation);
+      ImGui::PopID();
+    }
+    if(removeControl>=0){draft.controls.erase(draft.controls.begin()+removeControl);dirty=true;}
+    if(draft.controls.empty())ImGui::TextDisabled(u8"未添加扩展控制");
     ImGui::TreePop();
   }
   if (ImGui::TreeNode(u8"自定义追加 / 插入骨骼")) {

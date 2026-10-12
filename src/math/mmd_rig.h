@@ -12,6 +12,15 @@ struct IkLink {
   bool limited = false;
   Vec3 minimum, maximum;
 };
+// Explicit motion controls, independent of the destination model's skinning.
+struct RotationDriver {
+  int source = -1, inputAxis = 0;
+  Vec3 axis;
+  float weight = 1;
+};
+struct AimControl {
+  int source = -1, bone = -1;
+};
 struct RigBone {
   std::string name;
   Vec3 rest;
@@ -24,6 +33,8 @@ struct RigBone {
   int effector = -1, iterations = 0;
   float angleLimit = 0;
   std::vector<IkLink> links;
+  std::vector<RotationDriver> drivers;
+  bool controlIk = false, copyIkRotation = false, motionControl = false;
 };
 struct RigDefinition {
   std::string name;
@@ -34,6 +45,8 @@ struct RigDefinition {
   std::map<std::string, int> names;
   std::map<std::string, uint8_t> morphTypes;
   std::vector<std::string> warnings;
+  std::vector<AimControl> aims;
+  std::set<std::string> ignoredTracks;
   int find(const std::string &name) const {
     auto i = names.find(Name(name));
     return i == names.end() ? -1 : i->second;
@@ -61,9 +74,15 @@ struct RigDefinition {
       mark[i] = 1;
       visit(bones[i].parent, depth + 1);
       visit(bones[i].grant, depth + 1);
+      for (const auto &d : bones[i].drivers) {
+        if (d.source < 0 || d.source >= int(bones.size())) throw std::runtime_error("Invalid motion control driver");
+        visit(d.source, depth + 1);
+      }
       depths[i] =
           1 + (std::max)(bones[i].parent >= 0 ? depths[bones[i].parent] : 0,
                          bones[i].grant >= 0 ? depths[bones[i].grant] : 0);
+      for (const auto &d : bones[i].drivers)
+        depths[i] = (std::max)(depths[i], depths[d.source] + 1);
       if (depths[i] > 256)
         throw std::runtime_error("PMX dependency chain exceeds 256 bones");
       mark[i] = 2;
@@ -79,7 +98,20 @@ struct RigDefinition {
       for (auto &l : b.links)
         if (l.bone < 0 || l.bone >= int(bones.size()))
           throw std::runtime_error("Invalid IK link");
+      for (const auto &d : b.drivers)
+        if (d.source < 0 || d.source >= int(bones.size()) || d.inputAxis < 0 || d.inputAxis > 2)
+          throw std::runtime_error("Invalid motion control driver");
     }
+    for (const auto &a : aims) {
+      if (a.source < 0 || a.bone < 0 || a.source >= int(bones.size()) || a.bone >= int(bones.size()))
+        throw std::runtime_error("Invalid motion aim control");
+      for (int i=a.source;i>=0;i=bones[i].parent)
+        if(i==a.bone)throw std::runtime_error("Gaze target cannot depend on the eye it controls");
+    }
+    for (size_t c=0;c<bones.size();++c) if(bones[c].controlIk)
+      for (int i=int(c);i>=0;i=bones[i].parent)
+        for(const auto &link:bones[c].links)
+          if(i==link.bone)throw std::runtime_error("Arm IK target cannot depend on its solved chain");
   }
 };
 inline std::string PmxText(Reader &r, unsigned encoding,
@@ -422,6 +454,13 @@ class RigEvaluator {
       const auto &b = rig_->bones[i];
       Quat q = anim_[i].rotation;
       Vec3 p = anim_[i].position;
+      for (const auto &d : b.drivers) {
+        Quat control = NormQ(anim_[d.source].rotation);
+        if (control.w < 0) control = {-control.x,-control.y,-control.z,-control.w};
+        const float component = d.inputAxis == 0 ? control.x : d.inputAxis == 1 ? control.y : control.z;
+        const float angle = 2 * std::atan2(component, control.w);
+        q = NormQ(q * Quat::AxisAngle(d.axis, Clamp(angle * d.weight, -2.6f, 2.6f)));
+      }
       appendRot_[i] = {};
       appendPos_[i] = {};
       if (b.grant >= 0) {
@@ -471,6 +510,7 @@ class RigEvaluator {
 public:
   RigPose pose;
   std::vector<std::string> unmapped;
+  std::vector<std::string> unmappedIk;
   void bind(const RigDefinition &rig, const MotionClip &clip,
             const std::map<std::string, std::string> &bindings = {},
             const std::vector<int> &outputs = {}) {
@@ -491,7 +531,7 @@ public:
       auto binding = bindings.find(rig.bones[i].name);
       trackNames_[i] = binding == bindings.end() ? rig.bones[i].name : binding->second;
       auto track = clip.bones.find(trackNames_[i]);
-      if (!trackNames_[i].empty() && track != clip.bones.end()) tracks_[i] = &track->second;
+      if (!trackNames_[i].empty() && !rig.ignoredTracks.count(trackNames_[i]) && track != clip.bones.end()) tracks_[i] = &track->second;
     }
     mirrorNames_.resize(rig.bones.size());mirrorTracks_.assign(rig.bones.size(),nullptr);mirrored_=false;
     for(size_t i=0;i<rig.bones.size();++i) {
@@ -499,14 +539,17 @@ public:
       if(outputs.size()==55)for(int role=0;role<55;++role)if(outputs[role]==int(i)&&outputs[MirrorRole(role)]>=0){other=outputs[MirrorRole(role)];break;}
       mirrorNames_[i]=other>=0?trackNames_[other]:MirrorBoneName(trackNames_[i]);
       auto track=clip.bones.find(mirrorNames_[i]);
-      if(!mirrorNames_[i].empty()&&track!=clip.bones.end())mirrorTracks_[i]=&track->second;
+      if(!mirrorNames_[i].empty()&&!rig.ignoredTracks.count(mirrorNames_[i])&&track!=clip.bones.end())mirrorTracks_[i]=&track->second;
     }
+    std::set<int> scalarInputs;
     std::function<void(int)> need = [&](int i) {
       if (i < 0 || needed_[i])
         return;
       needed_[i] = true;
       need(rig.bones[i].parent);
       need(rig.bones[i].grant);
+      // Scalar controls consume their own local key, not their parent's pose.
+      for (const auto &d : rig.bones[i].drivers) scalarInputs.insert(d.source);
     };
     if (outputs.empty()) {
       for (const char *n : RoleNames()) need(rig.find(n));
@@ -514,33 +557,54 @@ public:
       for (int i : outputs) need(i);
     }
     controllers_.clear();
+    // Controllers can depend on other IK/aim chains. Discover to a fixed point
+    // instead of relying on file order (a controller may precede its consumer).
+    bool added = true;
+    while (added) { added = false;
+    for (const auto &a : rig.aims) if (needed_[a.bone] && !needed_[a.source]) {need(a.source);added=true;}
     for (size_t i = 0; i < rig.bones.size(); ++i) {
       const auto &b = rig.bones[i];
       bool relevant = false;
       for (const auto &l : b.links)
         relevant = relevant || needed_[l.bone];
-      if (b.effector >= 0 && relevant) {
+      if (b.effector >= 0 && relevant && std::find(controllers_.begin(),controllers_.end(),int(i))==controllers_.end()) {
         controllers_.push_back(int(i));
         need(int(i));
+        added = true;
       }
+    }
     }
     std::stable_sort(
         controllers_.begin(), controllers_.end(),
         [&](int a, int b) { return rig.bones[a].layer < rig.bones[b].layer; });
     std::set<std::string> used;
     for (size_t i = 0; i < rig.bones.size(); ++i)
-      if (needed_[i] && tracks_[i]) used.insert(trackNames_[i]);
+      if ((needed_[i] || scalarInputs.count(int(i))) && tracks_[i]) used.insert(trackNames_[i]);
     for (const auto &kv : clip.bones)
       if (!used.count(kv.first)) unmapped.push_back(kv.first);
+    std::set<std::string> usedIk;
+    for(int c:controllers_)usedIk.insert(trackNames_[c]);
+    for(const auto &a:rig.aims)if(needed_[a.bone])usedIk.insert(trackNames_[a.source]);
+    unmappedIk.clear();
+    for(const auto &kv:clip.ik)if(!usedIk.count(kv.first)&&!rig.ignoredTracks.count(kv.first))unmappedIk.push_back(kv.first);
   }
   bool hasTrack(int bone,bool mirror=false) const { return bone >= 0 && size_t(bone) < tracks_.size() && (mirror?mirrorTracks_:tracks_)[bone]; }
+  bool controlTracked(int bone) const {
+    for (int i = bone; i >= 0; i = rig_->bones[i].parent) {
+      if (i != bone && !rig_->bones[i].motionControl) break;
+      if (hasTrack(i, mirrored_)) return true;
+      const auto &name=(mirrored_?mirrorNames_:trackNames_)[i];
+      if(!rig_->ignoredTracks.count(name)&&clip_->ik.count(name))return true;
+    }
+    return false;
+  }
   bool ikEnabled(int controller, double frame, IkMode mode) const {
     if (std::find(controllers_.begin(), controllers_.end(), controller) == controllers_.end())
       return false;
     // Follow mode preserves FK-only clips. Force-on uses even stationary IK
     // targets from the selected rig; force-off bypasses every IK chain.
     return SampleIk(*clip_, (mirrored_?mirrorNames_:trackNames_)[controller], frame, mode) &&
-           (!rig_->builtin || (mirrored_?mirrorTracks_:tracks_)[controller] || mode == IkMode::ForceOn);
+           (!rig_->builtin || (rig_->bones[controller].controlIk ? controlTracked(controller) : hasTrack(controller,mirrored_)) || mode == IkMode::ForceOn);
   }
   void sample(double frame, IkMode mode = IkMode::FollowMotion,bool mirror=false) {
     mirrored_=mirror;const auto &tracks=mirror?mirrorTracks_:tracks_;
@@ -556,6 +620,23 @@ public:
       if (!ikEnabled(c, frame, mode))
         continue;
       const Vec3 target = pose.positions[c];
+      if (controller.controlIk && controller.links.size()==2) {
+        const int a=controller.links[1].bone,b=controller.links[0].bone,e=controller.effector;
+        const Vec3 pa=pose.positions[a],pb=pose.positions[b],pc=pose.positions[e];
+        const Vec3 axis=Norm(pc-pa);
+        Vec3 bend=(pb-pa)-axis*Dot(pb-pa,axis);
+        const int parent=rig_->bones[a].parent;
+        const Quat pr=parent>=0?pose.rotations[parent]:Quat{};
+        // Preserve the animated elbow plane; use a body-relative backward pole
+        // for a straight arm. Analytic IK converges even at full extension.
+        if(Len(bend)<1e-4f)bend=pr*Vec3{0,0,1};
+        Vec3 sa=pa,sb=pb,sc=pc;
+        SolveTwoBone(sa,sb,sc,target,pa+Norm(bend)*10,true);
+        setWorld(a,NormQ(Quat::FromTo(pb-pa,sb-sa)*pose.rotations[a]));
+        setWorld(b,NormQ(Quat::FromTo(pose.positions[e]-pose.positions[b],sc-sb)*pose.rotations[b]));
+        if(controller.copyIkRotation)setWorld(e,pose.rotations[c]);
+        continue;
+      }
       if (rig_->builtin &&
           (controller.name == u8"左足IK" || controller.name == u8"右足IK")) {
         int a = controller.links[1].bone, b = controller.links[0].bone,
@@ -601,6 +682,21 @@ public:
           world();
         }
       }
+      if (controller.copyIkRotation)
+        setWorld(controller.effector, pose.rotations[c]);
+    }
+    for (const auto &a : rig_->aims) {
+      if (!needed_[a.bone] || !controlTracked(a.source) ||
+          !SampleIk(*clip_,(mirrored_?mirrorNames_:trackNames_)[a.source],frame,mode)) continue;
+      const int parent = rig_->bones[a.bone].parent;
+      const Quat pr = parent >= 0 ? pose.rotations[parent] : Quat{};
+      const Vec3 direction = Conj(pr) * (pose.positions[a.source] - pose.positions[a.bone]);
+      const Vec3 rest = rig_->bones[a.source].rest - rig_->bones[a.bone].rest;
+      if (Len(direction)<1e-5f || Len(rest)<1e-5f) continue;
+      Vec3 e = EulerXYZ(Quat::FromTo(rest,direction));
+      // A gaze target must never roll the eye or flip it backward.
+      e.x=Clamp(e.x,-.45f,.45f);e.y=Clamp(e.y,-.6f,.6f);e.z=0;
+      setWorld(a.bone,NormQ(pr*FromXYZ(e)));
     }
   }
 };

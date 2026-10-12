@@ -6,6 +6,8 @@
 struct MmdSquadSlot {
   bool enabled=true,mirrorMotion=false;
   mmd::MotionClip clip;
+  mmd::MotionIssues boneIssues;
+  int issueRevision = -1;
   std::shared_ptr<const blender_bridge::Clip> edited;
   std::set<std::string> faceOverrides;
   bool content() const {return edited||!clip.empty();}
@@ -683,6 +685,7 @@ static bool MmdSquadTick() {
             mmd::AppendFace(slot.clip,r.clip);
           } else {slot.clip=std::move(r.clip);slot.file=r.file;slot.edited=r.edited;slot.faceOverrides.clear();
             if(slot.edited){slot.offset={};slot.yaw=0;slot.scale=1;slot.height=0;}}
+          slot.issueRevision=-1;
           slot.status=u8"动作已导入";s.status=u8"按小队位置分配完成，可播放或应用到四人";MmdSquadDuration();}
       }
     }
@@ -726,7 +729,7 @@ static void MmdSquadCopyToAll(int source) {
   if(g_squad.active||g_squad.pending.active||g_squad.loading||source<0||source>=4)return;
   if(g_squad.slots[source].edited){g_squad.status=u8"Blender 动作对应特定角色，请按队员分别加载";return;}
   const auto clip=g_squad.slots[source].clip;const auto file=g_squad.slots[source].file;
-  for(int n=0;n<4;++n) {g_squad.slots[n].clip=clip;g_squad.slots[n].file=file;g_squad.slots[n].edited.reset();g_squad.slots[n].faceOverrides.clear();}
+  for(int n=0;n<4;++n) {g_squad.slots[n].clip=clip;g_squad.slots[n].file=file;g_squad.slots[n].edited.reset();g_squad.slots[n].faceOverrides.clear();g_squad.slots[n].issueRevision=-1;}
   MmdSquadDuration();g_squad.status=u8"同一动作已应用到小队第 1–4 位";
 }
 static void MmdSquadInstall() {

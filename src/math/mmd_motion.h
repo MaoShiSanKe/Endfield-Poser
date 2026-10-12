@@ -402,7 +402,10 @@ inline bool SampleIk(const MotionClip &clip, const std::string &name,
   return n ? it->second[n - 1].enabled : true;
 }
 inline bool EyeBone(const std::string &n) {
-  return n == u8"両目" || n == u8"左目" || n == u8"右目";
+  if(n==u8"両目"||n==u8"左目"||n==u8"右目"||n==u8"視線"||n==u8"視線先"||n==u8"視線IK")return true;
+  const std::string prefix=u8"視線IK親";
+  return n.compare(0,prefix.size(),prefix)==0 &&
+    std::all_of(n.begin()+prefix.size(),n.end(),[](char c){return c>='0'&&c<='9';});
 }
 inline void AppendFace(MotionClip &to, const MotionClip &from) {
   for (const auto &kv : from.morphs)
@@ -410,6 +413,7 @@ inline void AppendFace(MotionClip &to, const MotionClip &from) {
   for (const auto &kv : from.bones)
     if (EyeBone(kv.first))
       to.bones[kv.first] = kv.second;
+  for(const auto &kv:from.ik)if(EyeBone(kv.first))to.ik[kv.first]=kv.second;
   Recount(to);
 }
 enum class PlayState { Stopped, Playing, Paused };

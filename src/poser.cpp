@@ -623,6 +623,7 @@ static void DrawPoserGuiBody() {
   ImGui::EndDisabled();
   DrawMmdPanel();
   DrawMmdSquadPanel();
+  DrawMmdMotionIssuesPanel();
   DrawMmdMotionCalibrationPanel();
   if (g_resetPanelLayoutFrames > 0) --g_resetPanelLayoutFrames;
 }

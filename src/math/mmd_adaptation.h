@@ -1,5 +1,6 @@
 #pragma once
 #include "math/mmd_rig.h"
+#include "math/mmd_control_rig.h"
 #include "math/mmd_amplitude.h"
 #include "nlohmann/json.hpp"
 
@@ -83,6 +84,8 @@ struct RigAdaptation {
   std::map<std::string, std::string> tracks;
   // Unity human role -> evaluated source-bone; empty leaves that role alone.
   std::map<int, std::string> roles;
+  std::vector<MotionControl> controls;
+  std::set<std::string> ignoredTracks;
 };
 inline RigAdaptation DefaultRigAdaptation() {
   RigAdaptation a;
@@ -91,13 +94,23 @@ inline RigAdaptation DefaultRigAdaptation() {
   return a;
 }
 inline void ValidateAdaptation(const RigAdaptation &a) {
-  if (a.extra.size() > 256 || a.tracks.size() > 8192 || a.roles.size() > 55)
+  if (a.extra.size() > 256 || a.controls.size() > 64 || a.ignoredTracks.size() > 8192 || a.tracks.size() > 8192 || a.roles.size() > 55)
     throw std::runtime_error(u8"适配配置项目过多");
   auto name = [](const std::string &s) {
     if (s.size() > 240 || s.find('\0') != s.npos)
       throw std::runtime_error(u8"骨骼或轨道名称过长或含空字符");
   };
   std::set<std::string> added;
+  for(const auto &c:a.controls) {
+    name(c.name);name(c.parent);
+    if(c.name.empty()||!added.insert(Name(c.name)).second||int(c.kind)<0||int(c.kind)>3||c.side<0||c.side>1||
+       c.finger < -1||c.finger>4||c.inputAxis<0||c.inputAxis>2||!std::isfinite(c.gain)||std::fabs(c.gain)>3)
+      throw std::runtime_error(u8"扩展骨控制配置无效或名称重复");
+    auto other=MirrorBoneName(c.name);
+    if(c.paired&&c.kind!=MotionControlKind::Gaze&&other!=c.name&&!added.insert(other).second)
+      throw std::runtime_error(u8"左右扩展骨控制名称重复");
+  }
+  for(const auto &n:a.ignoredTracks)name(n);
   for (const auto &b : a.extra) {
     for (const auto *s : {&b.name, &b.parent, &b.anchor, &b.before, &b.grant})
       name(*s);
@@ -123,6 +136,7 @@ inline RigDefinition AdaptRig(const RigDefinition &base,
                               const RigAdaptation &a) {
   ValidateAdaptation(a);
   RigDefinition r = base;
+  r.ignoredTracks=a.ignoredTracks;
   auto require = [&](const std::string &name) {
     int i = r.find(name);
     if (i < 0)
@@ -281,6 +295,9 @@ inline RigDefinition AdaptRig(const RigDefinition &base,
       throw std::runtime_error(u8"追加骨骼已存在：" + b.name);
     add(b.name, -1, {});
   }
+  // Control rests use anatomical anchors. Allocate them before resolving extra
+  // rests, so an inserted parent may use its target controller as its anchor.
+  AddMotionControls(r,a.controls);
   std::vector<uint8_t> marks(a.extra.size());
   std::function<void(size_t)> rest = [&](size_t k) {
     if (marks[k] == 2)
@@ -292,17 +309,19 @@ inline RigDefinition AdaptRig(const RigDefinition &base,
     Vec3 p{};
     if (!e.anchor.empty()) {
       int i = require(e.anchor);
-      if (size_t(i) >= begin)
+      if (size_t(i) >= begin && size_t(i) < begin + a.extra.size())
         rest(size_t(i) - begin);
       p = r.bones[i].rest;
     }
     r.bones[begin + k].rest = p + e.offset;
     marks[k] = 2;
   };
+  for(size_t k=0;k<a.extra.size();++k)rest(k);
   std::set<int> reparented;
   for (size_t k = 0; k < a.extra.size(); ++k) {
     const auto &e = a.extra[k];
     auto &b = r.bones[begin + k];
+    b.motionControl = true;
     b.parent = e.parent.empty() ? -1 : require(e.parent);
     if (!e.before.empty()) {
       int child = require(e.before);
@@ -363,9 +382,14 @@ inline nlohmann::json AdaptationJson(const RigAdaptation &a, int sourcePreset,
                       {"twists", a.twists},
                       {"ik_parents", a.ikParents},
                       {"roles", nlohmann::json::array()},
+                      {"ignored_tracks", a.ignoredTracks},
+                      {"motion_controls", nlohmann::json::array()},
                       {"extra_bones", nlohmann::json::array()}};
   for (const auto &kv : a.roles)
     j["roles"].push_back({{"role", kv.first}, {"source", kv.second}});
+  for(const auto &c:a.controls)j["motion_controls"].push_back({{"name",c.name},{"parent",c.parent},
+    {"kind",int(c.kind)},{"side",c.side},{"finger",c.finger},{"axis",c.inputAxis},{"gain",c.gain},
+    {"paired",c.paired},{"wrist_rotation",c.wristRotation}});
   for (const auto &b : a.extra)
     j["extra_bones"].push_back(
         {{"name", b.name},
@@ -398,6 +422,13 @@ inline RigAdaptation ReadAdaptation(const nlohmann::json &j, int &sourcePreset,
   a.shoulderCancel = j.value("shoulder_cancel", false);
   a.twists = j.value("twists", false);
   a.ikParents = j.value("ik_parents", false);
+  if(j.contains("ignored_tracks"))for(const auto &n:j.at("ignored_tracks"))a.ignoredTracks.insert(Name(n.get<std::string>()));
+  if(j.contains("motion_controls"))for(const auto &v:j.at("motion_controls")) {
+    MotionControl c;c.name=Name(v.at("name").get<std::string>());c.parent=Name(v.value("parent",""));
+    c.kind=MotionControlKind(v.at("kind").get<int>());c.side=v.value("side",0);c.finger=v.value("finger",-1);
+    c.inputAxis=v.value("axis",0);c.gain=v.value("gain",1.f);c.paired=v.value("paired",true);
+    c.wristRotation=v.value("wrist_rotation",true);a.controls.push_back(c);
+  }
   if (j.contains("tracks")) {
     for (auto it = j.at("tracks").begin(); it != j.at("tracks").end(); ++it)
       if (!a.tracks.emplace(Name(it.key()), Name(it.value().get<std::string>()))

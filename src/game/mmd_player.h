@@ -3,6 +3,7 @@
 #include "game/char_state.h"
 #include "game/mmd_io.h"
 #include "game/mmd_dialog_history.h"
+#include "game/mmd_rig_history.h"
 #include "game/mmd_audio.h"
 #include "game/mmd_music_mute.h"
 #include "game/smc_morph.h"
@@ -14,6 +15,7 @@
 #include "game/mmd_avatar.h"
 #include "game/mmd_terrain.h"
 #include "math/mmd_adaptation.h"
+#include "math/mmd_motion_issues.h"
 #include "game/mmd_camera.h"
 #if POSER_ENABLE_XXMI_BRIDGE
 #include "game/mod_bridge.h"
@@ -448,7 +450,11 @@ struct MmdPlayer {
   mmd::RigDefinition baseRig = mmd::StandardRig();
   mmd::RigAdaptation adaptation=mmd::DefaultRigAdaptation();
   int adaptationRevision = 0;
+  int adaptationSavedRevision = -1;
   std::string adaptationFile;
+  bool adaptationHistoryLoaded = false;
+  mmd::RigPresetHistory pendingAdaptation;
+  std::string adaptationRestoreStatus;
   int sourcePreset = 0; // 0: A-pose, 1: extracted T-pose; manual selection
   mmd::IkMode ikMode = mmd::IkMode::FollowMotion;
   mmd::MotionAmplitude amplitude;
@@ -477,6 +483,7 @@ struct MmdPlayer {
                                    calibrationStatus;
   std::map<std::string, MmdMorphMapping> morphMap;
   std::vector<std::string> report;
+  mmd::MotionIssues boneIssues;
   std::future<MmdLoadResult> loader;
   bool loading = false;
   int profileRevision = -1;
@@ -809,19 +816,10 @@ static void MmdReport() {
   m.report = m.clip.warnings;
   if(!m.clip.visibility.empty())m.report.push_back(u8"模型显示：按 VMD 显示开关逐帧播放（"+std::to_string(m.clip.visibility.size())+u8" 个关键帧）");
   m.report.insert(m.report.end(), m.rig.warnings.begin(), m.rig.warnings.end());
-  mmd::RigEvaluator evaluation;
-  auto roles = mmd::AdaptedRoles(m.adaptation);
-  std::vector<int> outputs;
-  for (int i = 0; i < 55; ++i) {
-    auto it = roles.find(i);
-    outputs.push_back(m.rig.find(it == roles.end() ? mmd::RoleNames()[i] : it->second));
-  }
-  evaluation.bind(m.rig, m.clip, m.adaptation.tracks, outputs);
-  for (const auto &kv : m.adaptation.tracks)
-    if (!kv.second.empty() && !m.clip.bones.count(kv.second))
-      m.report.push_back(u8"映射的动作轨道不存在：" + kv.second + u8" → " + kv.first);
-  for (const auto &name : evaluation.unmapped)
-    m.report.push_back(u8"未映射或不影响人体的骨骼: " + name);
+  m.boneIssues=m.editedBody?mmd::MotionIssues{}:mmd::AnalyzeMotionIssues(m.rig,m.clip,m.adaptation);
+  for (const auto &issue : m.boneIssues.unresolved)
+    m.report.push_back(u8"需处理："+issue.track+u8" — "+issue.reason);
+  if(!m.boneIssues.neutral.empty())m.report.push_back(u8"仅归零的未映射骨骼轨道："+std::to_string(m.boneIssues.neutral.size()));
   if(!m.characterFace)m.report.push_back(m.faceSettings.fallback?
     u8"当前角色没有专属表情校准，将使用固定映射":u8"当前角色没有专属表情校准，固定映射兜底已关闭");
   else if(!s_characterBinding.ready)m.report.push_back(m.faceSettings.fallback?
@@ -854,13 +852,16 @@ static void MmdReport() {
 }
 static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset) {
   auto &m = g_mmd;
-  if (m.session.active || m.loading) return false;
+  if (m.session.active || m.loading || m.preview || s_mmdStartRequest.active || MmdSquadBusy() || g_blenderEditing) {
+    m.status=u8"未应用适配：请先停止播放 / 校准预览，等待文件读取完成并断开 Blender";return false;
+  }
   try {
     auto base = m.reference ? m.baseRig : mmd::StandardRig(
         sourcePreset == 1 ? mmd::BuiltinRigPreset::ExtractedTPose : mmd::BuiltinRigPreset::StandardMmd);
     auto rig = mmd::AdaptRig(base, next);
     m.baseRig = std::move(base); m.rig = std::move(rig);
     m.adaptation = next; m.sourcePreset = sourcePreset;
+    m.adaptationHistoryLoaded=true;m.pendingAdaptation={};m.adaptationRestoreStatus.clear();
     ++m.adaptationRevision;
     MmdReport();
     m.status = u8"骨架适配已应用；下次播放使用新设置";
@@ -873,8 +874,13 @@ static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset)
 static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTarget = 0) {
   auto &m = g_mmd;
   const bool sizingPreset = kind == 7 || kind == 8;
-  if (m.loading || (sizingPreset ? m.preview : (m.session.active || MmdSquadBusy())))
-    return;
+  const bool saving = kind == 4 || kind == 8;
+  if (m.loading) return;
+  if (!saving && (sizingPreset ? m.preview :
+      (m.preview || m.session.active || s_mmdStartRequest.active || MmdSquadBusy() || g_blenderEditing))) {
+    m.status=u8"请停止播放或校准预览、断开 Blender 后再载入文件";return;
+  }
+  if(kind==3){m.pendingAdaptation={};m.adaptationRestoreStatus.clear();}
   if (sizingPreset && (motionTarget < 0 || motionTarget > 4)) return;
   if (kind == 8 && motionTarget && !m.squadMotion[motionTarget - 1].independent) {
     m.status = u8"请先开启该队员的独立动作校准，再保存"; return;
@@ -966,6 +972,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTa
         }
         if (!MoveFileExW(temporary.c_str(), selected.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
           throw std::runtime_error(u8"无法替换适配预设文件");
+        result.adaptation=saved;
         return result;
       }
       if ((kind == 3 || kind == 7) && std::filesystem::file_size(selected) > 1024 * 1024)
@@ -1007,6 +1014,37 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}, int motionTa
   });
   m.loading = true;
 }
+static void MmdRememberAdaptation(const std::string &file,const nlohmann::json &preset) {
+  auto &m=g_mmd;
+  try {
+    mmd::WriteRigPresetHistory(MmdConfigDirectory()/L"last-rig-preset.json",
+                               std::filesystem::u8path(file),preset.value("requires_pmx",false));
+    m.adaptationHistoryLoaded=true;m.pendingAdaptation={};m.adaptationRestoreStatus.clear();
+    m.status+=u8"；重启后自动恢复";
+    Log("[MMD] rig preset remembered: %s",file.c_str());
+  } catch(const std::exception &e) {
+    m.adaptationRestoreStatus=std::string(u8"预设文件已就绪，但无法记住重启配置：")+e.what();
+    m.status+=u8"；"+m.adaptationRestoreStatus;
+  }
+}
+static void MmdRestoreAdaptation() {
+  auto &m=g_mmd;
+  if(!m.adaptationHistoryLoaded) {
+    m.adaptationHistoryLoaded=true;
+    try {m.pendingAdaptation=mmd::ReadRigPresetHistory(MmdConfigDirectory()/L"last-rig-preset.json");}
+    catch(const std::exception &e){m.adaptationRestoreStatus=std::string(u8"无法读取上次适配：")+e.what();}
+  }
+  if(m.pendingAdaptation.file.empty())return;
+  if(m.pendingAdaptation.requiresPmx&&!m.reference) {
+    m.adaptationRestoreStatus=u8"上次适配需要 PMX 参考；请手动选择对应骨架后恢复";return;
+  }
+  if(m.loading||m.preview||m.session.active||s_mmdStartRequest.active||MmdSquadBusy()||g_blenderEditing)return;
+  const auto file=m.pendingAdaptation.file;
+  m.pendingAdaptation={};
+  m.adaptationRestoreStatus=u8"正在恢复上次保存的适配…";
+  MmdBeginLoad(3,std::filesystem::u8path(file));
+  if(m.loading)m.adaptationRestoreStatus=u8"正在恢复上次保存的适配…";
+}
 static void MmdPollLoad() {
   auto &m = g_mmd;
   if (!m.loading ||
@@ -1019,6 +1057,7 @@ static void MmdPollLoad() {
   if (!r.error.empty()) {
     m.status = r.error;
     Log("[MMD] load error file=%s: %s", r.file.c_str(), r.error.c_str());
+    if(r.kind==3||r.kind==4)m.adaptationRestoreStatus=u8"适配文件未完成："+r.error;
     return;
   }
   if (r.kind == 7 || r.kind == 8) {
@@ -1059,7 +1098,9 @@ static void MmdPollLoad() {
   }
   if (r.kind == 4) {
     m.adaptationFile = r.file;
+    m.adaptationSavedRevision=m.adaptationRevision;
     m.status = u8"适配预设已保存：" + r.file;
+    MmdRememberAdaptation(r.file,r.adaptation);
     return;
   }
   if (r.kind == 3) {
@@ -1092,10 +1133,13 @@ static void MmdPollLoad() {
         ClothBoneQueueCommand(0,!cloth.enhancement);
         s_skirtDirty.store(true);
         m.ikMode = ik; m.adaptationFile = r.file;
+        m.adaptationSavedRevision=m.adaptationRevision;
         m.status = u8"适配预设已载入：" + r.file;
-      }
+        MmdRememberAdaptation(r.file,j);
+      } else m.adaptationRestoreStatus=m.status;
     } catch (const std::exception &e) {
       m.status = std::string(u8"保留原适配：") + e.what();
+      m.adaptationRestoreStatus=m.status;
     }
     return;
   }
@@ -1578,6 +1622,7 @@ static void MmdTick() {
     MmdLoadFaceSettings();
     MmdPollCharacterFaces();
     MmdPollLoad();
+    MmdRestoreAdaptation();
 #if POSER_ENABLE_XXMI_BRIDGE
     ModBridgeService();
 #endif

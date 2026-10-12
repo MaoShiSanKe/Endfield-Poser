@@ -95,12 +95,14 @@ static void DrawMmdSquadPanel() {
         ImGui::SameLine();
         if (ImGui::SmallButton(u8"清除")) {
           slot.clip = {};
+          slot.issueRevision=-1;
           slot.edited.reset();slot.faceOverrides.clear();
           slot.file.clear();
           slot.status.clear();
           MmdSquadDuration();
         }
         DrawMmdFile(slot.file);
+        if(!slot.edited&&(!slot.clip.bones.empty()||!slot.clip.ik.empty()))DrawMmdMotionIssueBanner(i+1);
         if(ImGui::TreeNode(u8"校准状态")) {
         ImGui::TextWrapped("%s", slot.calibration.c_str());
         if(s.actors[i]&&!s.actors[i]->thumbStatus.empty())

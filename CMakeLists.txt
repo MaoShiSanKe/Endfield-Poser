@@ -52,13 +52,15 @@ if(WIN32)
     src/config.h
     src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
+    src/math/mmd_control_rig.h src/math/mmd_motion_issues.h src/editor/panel_mmd_motion_issues.h
+    src/editor/mmd_adaptation_draft.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/blender_squad.h
     src/game/transparent_capture.h src/math/transparent_capture.h src/editor/panel_capture.h
     src/game/mmd_recording.h src/math/mmd_recording.h src/editor/panel_recording.h
     src/game/recording_readback.h src/game/recording_mask_probe.h src/math/recording_png.h src/math/recording_queue.h
     src/core/recording_display.h
-    src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
+    src/game/mmd_player.h src/game/mmd_io.h src/game/mmd_dialog_history.h src/game/mmd_rig_history.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
     src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h
     src/cloth/native/cloth_turn_runtime.h

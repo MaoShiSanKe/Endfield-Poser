@@ -617,8 +617,10 @@ public:
         if (i < 0 || !seen.insert(i).second)
           return false;
         auto &b = source.bones[i];
-        return eval_.hasTrack(i,mirror) || affects(b.parent) ||
-               affects(b.grant);
+        if(eval_.hasTrack(i,mirror)||affects(b.parent)||affects(b.grant))return true;
+        for(const auto &d:b.drivers)if(eval_.hasTrack(d.source,mirror))return true;
+        for(const auto &a:source.aims)if(a.bone==i&&affects(a.source))return true;
+        return false;
       };
       // VMD omits neutral bones. A body clip still needs a coherent neutral
       // parent chain, including links driven exclusively by IK controllers.
